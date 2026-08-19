@@ -1,0 +1,977 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>JESTER V1000 - OMNISCIENCE OBSERVATORY</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;500;700;900&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<!-- Chart.js for Advanced FFT Graphing -->
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<!-- Three.js for 3D Visualizer -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<style>
+  :root {
+    --bg-base: #030704;
+    --grid-color: rgba(0, 255, 136, 0.05);
+    --panel-bg: rgba(5, 15, 10, 0.6);
+    --panel-border: rgba(0, 255, 136, 0.15);
+    --panel-glow: rgba(0, 255, 136, 0.05);
+    --text-main: #e0f2e9;
+    --text-muted: #6b8f7d;
+    --accent-green: #00ff88;
+    --accent-green-glow: rgba(0, 255, 136, 0.6);
+    --accent-gold: #ffd700;
+    --accent-red: #ff3366;
+    --accent-cyan: #00e5ff;
+    --accent-purple: #b026ff;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0;
+    padding: 0;
+    background-color: var(--bg-base);
+    color: var(--text-main);
+    font-family: 'JetBrains Mono', monospace;
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  /* Matrix grid background */
+  #particle-bg {
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    z-index: -2;
+    pointer-events: none;
+  }
+
+  body::before {
+    content: '';
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background-image: 
+      linear-gradient(var(--grid-color) 1px, transparent 1px),
+      linear-gradient(90deg, var(--grid-color) 1px, transparent 1px);
+    background-size: 40px 40px;
+    z-index: -1;
+    pointer-events: none;
+    mask-image: radial-gradient(circle at center, black 40%, transparent 100%);
+    -webkit-mask-image: radial-gradient(circle at center, black 40%, transparent 100%);
+  }
+
+  .wrap {
+    max-width: 1400px;
+    margin: 0 auto;
+    padding: 40px 30px;
+  }
+
+  header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+    border-bottom: 2px solid var(--panel-border);
+    padding-bottom: 20px;
+    margin-bottom: 30px;
+    position: relative;
+  }
+
+  header::after {
+    content: '';
+    position: absolute;
+    bottom: -2px;
+    left: 0;
+    width: 150px;
+    height: 2px;
+    background: var(--accent-green);
+    box-shadow: 0 0 10px var(--accent-green-glow);
+  }
+
+  .header-left {
+      display: flex;
+      align-items: center;
+      gap: 30px;
+  }
+
+  /* 3D Holographic Avatar */
+  .avatar-container {
+      width: 100px;
+      height: 100px;
+      position: relative;
+  }
+  #webgl-brain {
+      width: 100%;
+      height: 100%;
+      position: absolute;
+      top: 0; left: 0;
+  }
+
+  h1 {
+    font-family: 'Orbitron', sans-serif;
+    font-weight: 900;
+    font-size: 32px;
+    letter-spacing: 0.1em;
+    margin: 0;
+    color: #fff;
+    text-shadow: 0 0 20px var(--accent-green-glow);
+  }
+
+  h1 span.highlight { color: var(--accent-green); }
+
+  .subtitle {
+    font-size: 13px;
+    color: var(--text-muted);
+    margin-top: 8px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+  }
+
+  .status-container {
+    display: flex;
+    align-items: center;
+    gap: 15px;
+    background: rgba(0, 0, 0, 0.4);
+    padding: 8px 16px;
+    border: 1px solid var(--panel-border);
+    border-radius: 4px;
+    backdrop-filter: blur(5px);
+  }
+
+  .status-text {
+    font-size: 12px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--accent-green);
+    font-family: 'Orbitron', sans-serif;
+  }
+
+  .dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: var(--text-muted);
+    transition: all 0.3s ease;
+  }
+
+  .dot.live {
+    background: var(--accent-green);
+    box-shadow: 0 0 12px var(--accent-green);
+    animation: pulse-green 1.5s infinite alternate;
+  }
+
+  .dot.down {
+    background: var(--accent-red);
+    box-shadow: 0 0 12px var(--accent-red);
+  }
+
+  @keyframes pulse-green {
+    0% { transform: scale(0.9); opacity: 0.7; }
+    100% { transform: scale(1.1); opacity: 1; box-shadow: 0 0 20px var(--accent-green); }
+  }
+
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(12, 1fr);
+    gap: 20px;
+  }
+
+  .panel {
+    background: var(--panel-bg);
+    border: 1px solid var(--panel-border);
+    border-radius: 8px;
+    padding: 24px;
+    position: relative;
+    backdrop-filter: blur(10px);
+    box-shadow: inset 0 0 20px var(--panel-glow), 0 4px 15px rgba(0,0,0,0.5);
+    transition: transform 0.2s, box-shadow 0.2s;
+  }
+
+  .panel:hover {
+    box-shadow: inset 0 0 30px rgba(0, 255, 136, 0.1), 0 8px 25px rgba(0,0,0,0.6);
+    border-color: rgba(0, 255, 136, 0.3);
+  }
+
+  .panel::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0;
+    width: 100%; height: 2px;
+    background: linear-gradient(90deg, transparent, var(--accent-green), transparent);
+    opacity: 0;
+    transition: opacity 0.3s;
+  }
+
+  .panel:hover::before { opacity: 0.5; }
+
+  .panel-label {
+    font-family: 'Orbitron', sans-serif;
+    font-size: 11px;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    margin-bottom: 15px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+
+  .panel-label .tag {
+    color: var(--accent-cyan);
+    font-size: 10px;
+    background: rgba(0, 229, 255, 0.1);
+    padding: 2px 6px;
+    border-radius: 3px;
+    border: 1px solid rgba(0, 229, 255, 0.2);
+  }
+
+  .big-readout {
+    font-family: 'Orbitron', sans-serif;
+    font-weight: 700;
+    font-size: 38px;
+    color: #fff;
+    line-height: 1;
+    text-shadow: 0 0 15px rgba(255,255,255,0.2);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .unit { font-size: 14px; color: var(--accent-green); font-weight: 500; margin-left: 8px; font-family: 'JetBrains Mono', monospace;}
+
+  .sub-readout {
+    font-size: 12px;
+    color: var(--text-muted);
+    margin-top: 12px;
+    line-height: 1.6;
+  }
+
+  .sub-readout b { color: var(--text-main); font-weight: 700; }
+
+  .chart-panel { grid-column: span 8; padding: 0; overflow: hidden; }
+  .chart-panel-small { grid-column: span 4; padding: 15px; overflow: hidden; }
+  .chart-header { padding: 20px 24px 0 24px; }
+  
+  #stripchart {
+    width: 100%;
+    height: 200px;
+    display: block;
+    background: linear-gradient(180deg, rgba(0,0,0,0) 0%, rgba(0,255,136,0.02) 100%);
+  }
+  
+  #fftChart {
+      width: 100%;
+      height: 180px;
+  }
+
+  .col-3 { grid-column: span 3; }
+  .col-4 { grid-column: span 4; }
+  .col-6 { grid-column: span 6; }
+  .col-8 { grid-column: span 8; }
+  .col-12 { grid-column: span 12; }
+
+  @media (max-width: 1024px) {
+    .col-3 { grid-column: span 6; }
+    .col-4 { grid-column: span 6; }
+    .col-8 { grid-column: span 12; }
+  }
+  @media (max-width: 768px) {
+    .col-3, .col-4, .col-6 { grid-column: span 12; }
+  }
+
+  .gauge-container {
+    margin-top: 15px;
+    position: relative;
+  }
+
+  .gauge-track {
+    width: 100%;
+    height: 8px;
+    background: rgba(255,255,255,0.05);
+    border-radius: 4px;
+    overflow: hidden;
+    position: relative;
+    border: 1px solid rgba(255,255,255,0.1);
+  }
+
+  .gauge-fill {
+    height: 100%;
+    border-radius: 4px;
+    transition: width 0.8s cubic-bezier(0.16, 1, 0.3, 1), background 0.5s ease;
+    box-shadow: inset 0 0 5px rgba(255,255,255,0.5);
+  }
+
+  .gauge-markers {
+    display: flex;
+    justify-content: space-between;
+    font-size: 9px;
+    color: var(--text-muted);
+    margin-top: 4px;
+  }
+
+  .anomaly-banner {
+    grid-column: span 12;
+    display: none;
+    padding: 15px 24px;
+    border: 1px solid var(--accent-red);
+    background: rgba(255, 51, 102, 0.1);
+    color: var(--accent-red);
+    font-size: 14px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    border-radius: 8px;
+    align-items: center;
+    gap: 15px;
+    box-shadow: 0 0 20px rgba(255, 51, 102, 0.2);
+    animation: flash-banner 2s infinite;
+  }
+  .anomaly-banner.show { display: flex; }
+
+  @keyframes flash-banner {
+    0%, 100% { box-shadow: 0 0 20px rgba(255, 51, 102, 0.2); background: rgba(255, 51, 102, 0.1); }
+    50% { box-shadow: 0 0 40px rgba(255, 51, 102, 0.4); background: rgba(255, 51, 102, 0.2); }
+  }
+
+  .log-panel { grid-column: span 12; }
+  #log {
+    max-height: 200px;
+    overflow-y: auto;
+    font-size: 12px;
+    color: var(--text-muted);
+    line-height: 1.8;
+  }
+  
+  /* Custom Scrollbar */
+  ::-webkit-scrollbar { width: 8px; }
+  ::-webkit-scrollbar-track { background: rgba(0,0,0,0.2); border-radius: 4px; }
+  ::-webkit-scrollbar-thumb { background: rgba(0,255,136,0.2); border-radius: 4px; }
+  ::-webkit-scrollbar-thumb:hover { background: rgba(0,255,136,0.4); }
+
+  #log div { padding: 4px 0; border-bottom: 1px solid rgba(255,255,255,0.02); }
+  #log div span.val { color: var(--text-main); }
+  #log div span.ts { color: var(--accent-green); opacity: 0.7; }
+  #log div.flag { color: var(--accent-gold); }
+  #log div.flag span.val { color: var(--accent-red); }
+
+  footer {
+    margin-top: 40px;
+    font-size: 12px;
+    color: var(--text-muted);
+    line-height: 1.7;
+    border-top: 1px solid var(--panel-border);
+    padding-top: 20px;
+    text-align: center;
+  }
+  footer a { color: var(--accent-cyan); text-decoration: none; }
+</style>
+</head>
+<body>
+
+<!-- Audio for Anomaly Warnings -->
+<audio id="warningAudio" src="https://actions.google.com/sounds/v1/alarms/spaceship_alarm.ogg"></audio>
+
+<canvas id="particle-bg"></canvas>
+<div class="wrap">
+
+  <header>
+    <div class="header-left">
+      <div class="avatar-container">
+        <div id="webgl-brain"></div>
+      </div>
+      <div>
+        <h1>OMNISCIENCE <span class="highlight">OBSERVATORY</span></h1>
+        <div class="subtitle">JESTER V1000 GOD HAND :: QUANTUM / MACRO-STATE / FREQUENCY</div>
+        <button id="audioBtn" style="margin-top: 10px; background: transparent; color: var(--accent-cyan); border: 1px solid var(--accent-cyan); padding: 5px 10px; cursor: pointer; font-family: 'Orbitron'; font-size: 10px;">ENABLE SONIFICATION</button>
+      </div>
+    </div>
+    <div class="status-container">
+      <div class="dot" id="statusDot"></div>
+      <span class="status-text" id="statusText">INITIALIZING_</span>
+    </div>
+  </header>
+
+  <div class="grid">
+
+    <div class="anomaly-banner" id="anomalyBanner">
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>
+      SYSTEM ANOMALY DETECTED — CORRELATION OR FREQUENCY THRESHOLD EXCEEDED
+    </div>
+
+    <!-- MAIN CHART -->
+    <div class="panel chart-panel">
+      <div class="chart-header">
+        <div class="panel-label">
+          <span>REAL-TIME ENTROPY TRACE (H)</span>
+          <span class="tag" id="entropySourceTag">SOURCE: SCANNING...</span>
+        </div>
+      </div>
+      <canvas id="stripchart"></canvas>
+    </div>
+    
+    <!-- FFT CHART -->
+    <div class="panel chart-panel-small">
+      <div class="panel-label">
+        <span>QUANTUM FFT FREQUENCY</span>
+        <span class="tag" style="color: var(--accent-purple); border-color: var(--accent-purple)">AMPLITUDE</span>
+      </div>
+      <canvas id="fftChart"></canvas>
+    </div>
+
+    <!-- ROW 1: PRIMARY METRICS -->
+    <div class="panel col-4">
+      <div class="panel-label"><span>QUANTUM ENTROPY</span></div>
+      <div class="big-readout" id="entropyVal">0.0000<span class="unit">bits</span></div>
+      <div class="sub-readout">Z-SCORE: <b id="zscoreVal" style="color: var(--accent-cyan)">0.00</b> | ML SCORE: <b id="mlScoreVal" style="color: var(--accent-purple)">0.00</b></div>
+    </div>
+
+    <div class="panel col-4">
+      <div class="panel-label"><span>SOLAR FLARE X-RAY</span></div>
+      <div class="big-readout" id="xrayVal">0.0<span class="unit">W/m²</span></div>
+      <div class="sub-readout">NOAA GOES-16 0.1-0.8nm</div>
+    </div>
+
+    <div class="panel col-4">
+      <div class="panel-label"><span>JESTER COHERENCE</span></div>
+      <div class="big-readout" id="jesterCoherence">0<span class="unit">%</span></div>
+      <div class="gauge-container">
+        <div class="gauge-track"><div class="gauge-fill" id="jesterGauge" style="width:0%; background: var(--accent-green);"></div></div>
+      </div>
+      <div class="sub-readout">COGNITIVE LOAD: <b id="jesterLoad">IDLE</b></div>
+    </div>
+
+    <!-- ROW 2: ENVIRONMENT -->
+    <div class="panel col-3">
+      <div class="panel-label"><span>GEOMAGNETIC (Kp)</span></div>
+      <div class="big-readout" id="kpVal">0.0</div>
+      <div class="gauge-container">
+        <div class="gauge-track"><div class="gauge-fill" id="kpGauge" style="width:0%; background: var(--accent-green);"></div></div>
+        <div class="gauge-markers"><span>0</span><span>9</span></div>
+      </div>
+      <div class="sub-readout">PLANETARY INDEX</div>
+    </div>
+    
+    <div class="panel col-3">
+      <div class="panel-label"><span>MAGNETOMETER</span></div>
+      <div class="big-readout" id="magVal">0.0<span class="unit">nT</span></div>
+      <div class="sub-readout">NOAA DSCOVR B_TOTAL</div>
+    </div>
+
+    <div class="panel col-3">
+      <div class="panel-label"><span>SOLAR WIND</span></div>
+      <div class="big-readout" id="swVal">0<span class="unit">km/s</span></div>
+      <div class="sub-readout">DENSITY: <b id="swDensity" style="color: var(--accent-gold)">0.0</b> p/cm³<br>CME: <b id="cmeVal" style="color: var(--accent-red)">None</b></div>
+    </div>
+
+    <div class="panel col-3">
+      <div class="panel-label"><span>SEISMIC (M4.5+)</span></div>
+      <div class="big-readout" id="quakeVal">M 0.0</div>
+      <div class="sub-readout" id="quakePlace" style="margin-top: 20px;">AWAITING DATA...</div>
+    </div>
+
+    <!-- ROW 3: LOGS -->
+    <div class="panel log-panel">
+      <div class="panel-label"><span>SYSTEM TELEMETRY LOG</span></div>
+      <div id="log"></div>
+    </div>
+
+  </div>
+
+  <footer>
+    JESTER V1000 PROTOCOL ACTIVE. <br>
+    Connects to Science Engine via <code>ws://localhost:8765</code>. Autonomous Watchdog Enabled.
+  </footer>
+
+</div>
+
+<script>
+const WS_URL = "ws://localhost:8765";
+const MAX_POINTS = 200; // Increased resolution
+const history = [];
+
+const dot = document.getElementById('statusDot');
+const statusText = document.getElementById('statusText');
+const canvas = document.getElementById('stripchart');
+const ctx = canvas.getContext('2d');
+const logEl = document.getElementById('log');
+const alarm = document.getElementById('warningAudio');
+
+let brainMesh, brainInner;
+
+let alarmPlayed = false;
+
+// --- Web Audio API Sonification ---
+let audioCtx;
+let oscillator;
+let gainNode;
+let isAudioEnabled = false;
+
+document.getElementById('audioBtn').addEventListener('click', () => {
+    if (!audioCtx) {
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        oscillator = audioCtx.createOscillator();
+        gainNode = audioCtx.createGain();
+        oscillator.type = 'sine';
+        oscillator.frequency.value = 432; // Base Hz
+        gainNode.gain.value = 0.05; // Low volume background drone
+        oscillator.connect(gainNode);
+        gainNode.connect(audioCtx.destination);
+        oscillator.start();
+        isAudioEnabled = true;
+        document.getElementById('audioBtn').textContent = "SONIFICATION ACTIVE";
+        document.getElementById('audioBtn').style.background = "var(--accent-green)";
+        document.getElementById('audioBtn').style.color = "#000";
+    }
+});
+
+// FFT Chart.js Instance
+const fftCtx = document.getElementById('fftChart').getContext('2d');
+const fftChart = new Chart(fftCtx, {
+    type: 'bar',
+    data: {
+        labels: ['Freq 1', 'Freq 2', 'Freq 3', 'Freq 4', 'Freq 5'],
+        datasets: [{
+            label: 'FFT Amplitude',
+            data: [0, 0, 0, 0, 0],
+            backgroundColor: 'rgba(176, 38, 255, 0.5)',
+            borderColor: 'rgba(176, 38, 255, 1)',
+            borderWidth: 1
+        }]
+    },
+    options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        scales: {
+            y: { display: false, beginAtZero: true, max: 2.0 },
+            x: { display: false }
+        },
+        plugins: { legend: { display: false } },
+        animation: { duration: 200 }
+    }
+});
+
+function resizeCanvas() {
+  const rect = canvas.getBoundingClientRect();
+  canvas.width = rect.width * devicePixelRatio;
+  canvas.height = rect.height * devicePixelRatio;
+  ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
+
+  // Resize particle canvas
+  const pCanvas = document.getElementById('particle-bg');
+  pCanvas.width = window.innerWidth;
+  pCanvas.height = window.innerHeight;
+}
+window.addEventListener('resize', resizeCanvas);
+resizeCanvas(); // init
+
+// --- WebGL Brain Visualizer ---
+function initBrain() {
+    const container = document.getElementById('webgl-brain');
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(50, 1, 0.1, 1000);
+    const renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true });
+    
+    renderer.setSize(100, 100);
+    container.appendChild(renderer.domElement);
+    
+    // Outer Icosahedron
+    const geometry = new THREE.IcosahedronGeometry(1, 1);
+    const material = new THREE.MeshBasicMaterial({ color: 0x00ff88, wireframe: true, transparent: true, opacity: 0.8 });
+    brainMesh = new THREE.Mesh(geometry, material);
+    scene.add(brainMesh);
+    
+    // Inner Torus Knot
+    const innerGeo = new THREE.TorusKnotGeometry(0.5, 0.15, 64, 8);
+    const innerMat = new THREE.MeshBasicMaterial({ color: 0x00e5ff, wireframe: true, transparent: true, opacity: 0.6 });
+    brainInner = new THREE.Mesh(innerGeo, innerMat);
+    scene.add(brainInner);
+    
+    camera.position.z = 3;
+    
+    function animate() {
+        requestAnimationFrame(animate);
+        if (brainMesh && brainInner) {
+            brainMesh.rotation.x += 0.01;
+            brainMesh.rotation.y += 0.015;
+            brainInner.rotation.x -= 0.02;
+            brainInner.rotation.y -= 0.01;
+        }
+        renderer.render(scene, camera);
+    }
+    animate();
+}
+initBrain();
+
+// --- Random Particle Background Generator ---
+const pCanvas = document.getElementById('particle-bg');
+const pCtx = pCanvas.getContext('2d');
+let particles = [];
+
+function initParticles() {
+    particles = [];
+    for(let i = 0; i < 150; i++) {
+        particles.push({
+            x: Math.random() * window.innerWidth,
+            y: Math.random() * window.innerHeight,
+            vx: (Math.random() - 0.5) * 0.5,
+            vy: (Math.random() - 0.5) * 0.5,
+            radius: Math.random() * 2
+        });
+    }
+}
+initParticles();
+
+function drawParticles(isAnomaly) {
+    pCtx.clearRect(0, 0, pCanvas.width, pCanvas.height);
+    const color = isAnomaly ? 'rgba(255, 51, 102, ' : 'rgba(0, 255, 136, ';
+    
+    particles.forEach(p => {
+        p.x += p.vx * (isAnomaly ? 5 : 1);
+        p.y += p.vy * (isAnomaly ? 5 : 1);
+        
+        if (p.x < 0) p.x = pCanvas.width;
+        if (p.x > pCanvas.width) p.x = 0;
+        if (p.y < 0) p.y = pCanvas.height;
+        if (p.y > pCanvas.height) p.y = 0;
+        
+        pCtx.beginPath();
+        pCtx.arc(p.x, p.y, p.radius, 0, Math.PI * 2);
+        pCtx.fillStyle = color + '0.5)';
+        pCtx.fill();
+    });
+    
+    // Connect close particles
+    for(let i = 0; i < particles.length; i++) {
+        for(let j = i + 1; j < particles.length; j++) {
+            const dx = particles[i].x - particles[j].x;
+            const dy = particles[i].y - particles[j].y;
+            const dist = Math.sqrt(dx*dx + dy*dy);
+            if (dist < 100) {
+                pCtx.beginPath();
+                pCtx.strokeStyle = color + (1 - dist/100) * 0.2 + ')';
+                pCtx.moveTo(particles[i].x, particles[i].y);
+                pCtx.lineTo(particles[j].x, particles[j].y);
+                pCtx.stroke();
+            }
+        }
+    }
+}
+
+
+function drawChart() {
+  const rect = canvas.getBoundingClientRect();
+  const w = rect.width, h = rect.height;
+  ctx.clearRect(0, 0, w, h);
+
+  if (history.length < 2) return;
+
+  const vals = history.map(p => p.entropy);
+  const min = Math.min(...vals) - 0.01;
+  const max = Math.max(...vals) + 0.01;
+  const range = (max - min) || 1;
+
+  // Draw Gridlines
+  ctx.strokeStyle = 'rgba(0, 255, 136, 0.05)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  for (let i = 1; i < 5; i++) {
+    const y = (h / 5) * i;
+    ctx.moveTo(0, y);
+    ctx.lineTo(w, y);
+  }
+  for (let i = 1; i < 20; i++) {
+    const x = (w / 20) * i;
+    ctx.moveTo(x, 0);
+    ctx.lineTo(x, h);
+  }
+  ctx.stroke();
+
+  // Draw Trace Area (Gradient)
+  ctx.beginPath();
+  ctx.moveTo(0, h);
+  history.forEach((p, i) => {
+    const x = (i / (MAX_POINTS - 1)) * w;
+    const y = h - ((p.entropy - min) / range) * h;
+    ctx.lineTo(x, y);
+  });
+  ctx.lineTo(w, h);
+  const gradient = ctx.createLinearGradient(0, 0, 0, h);
+  gradient.addColorStop(0, 'rgba(0, 255, 136, 0.2)');
+  gradient.addColorStop(1, 'rgba(0, 255, 136, 0)');
+  ctx.fillStyle = gradient;
+  ctx.fill();
+
+  // Draw Trace Line
+  ctx.beginPath();
+  ctx.strokeStyle = '#00ff88';
+  ctx.lineWidth = 2;
+  ctx.shadowColor = '#00ff88';
+  ctx.shadowBlur = 10;
+
+  history.forEach((p, i) => {
+    const x = (i / (MAX_POINTS - 1)) * w;
+    const y = h - ((p.entropy - min) / range) * h;
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  });
+  ctx.stroke();
+  ctx.shadowBlur = 0;
+
+  // Draw Anomaly Markers
+  history.forEach((p, i) => {
+    if (!p.anomaly) return;
+    const x = (i / (MAX_POINTS - 1)) * w;
+    const y = h - ((p.entropy - min) / range) * h;
+    ctx.beginPath();
+    ctx.fillStyle = '#ff3366';
+    ctx.shadowColor = '#ff3366';
+    ctx.shadowBlur = 15;
+    ctx.arc(x, y, 4, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.shadowBlur = 0;
+  });
+
+  // Leading Edge Pulse
+  const last = history[history.length - 1];
+  const lx = ( (history.length - 1) / (MAX_POINTS - 1) ) * w;
+  const ly = h - ((last.entropy - min) / range) * h;
+  
+  ctx.beginPath();
+  ctx.fillStyle = '#ffffff';
+  ctx.shadowColor = '#00ff88';
+  ctx.shadowBlur = 20;
+  ctx.arc(lx, ly, 4, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.shadowBlur = 0;
+}
+
+function setGauge(id, pct, color) {
+  const el = document.getElementById(id);
+  el.style.width = Math.max(0, Math.min(100, pct)) + '%';
+  if (color) {
+    el.style.background = color;
+    el.style.boxShadow = `0 0 10px ${color}`;
+  }
+}
+
+function corrColor(r) {
+  const a = Math.abs(r);
+  if (a > 0.6) return 'var(--accent-red)';
+  if (a > 0.35) return 'var(--accent-gold)';
+  return 'var(--accent-cyan)';
+}
+
+function logTick(payload) {
+  const t = new Date(payload.timestamp * 1000).toLocaleTimeString();
+  const div = document.createElement('div');
+  const flagged = payload.analytics.anomaly_detected;
+  
+  if (flagged) div.className = 'flag';
+  
+  // Create a stylized log entry
+  div.innerHTML = `<span class="ts">[${t}]</span> SYSTEM_TICK: `
+    + `H=<span class="val">${payload.metrics.shannon_entropy.toFixed(4)}</span> | `
+    + `ML=<span class="val">${payload.analytics.ml_anomaly_score || 0}</span> | `
+    + `FFT_AMP=<span class="val">${payload.analytics.fft_dominant_amplitude || 0}</span> `
+    + (flagged ? ' ⚠ <span class="val">[ANOMALY_TRIGGERED]</span>' : '');
+    
+  logEl.prepend(div);
+  while (logEl.children.length > 50) logEl.removeChild(logEl.lastChild);
+}
+
+// Generates simulated "Idea" data that isn't in the original python backend payload
+function generateMockData(payload) {
+    // Simulate Jester Coherence (drops during anomalies)
+    let coherence = 98 + Math.random() * 2;
+    if (payload.analytics.anomaly_detected) {
+        coherence = 60 + Math.random() * 20;
+    }
+    return { coherence: coherence };
+}
+
+function render(payload) {
+  const m = payload.metrics;
+  const a = payload.analytics;
+  const mock = generateMockData(payload);
+
+  // DOM Updates
+  document.getElementById('entropyVal').innerHTML = m.shannon_entropy.toFixed(4) + '<span class="unit">bits</span>';
+  document.getElementById('zscoreVal').textContent = a.rolling_z_score;
+  document.getElementById('mlScoreVal').textContent = a.ml_anomaly_score || 0;
+  document.getElementById('entropySourceTag').textContent = 'SOURCE: ' + (m.entropy_source || 'UNKNOWN').toUpperCase();
+
+  document.getElementById('kpVal').textContent = m.geomagnetic_kp.toFixed(1);
+  setGauge('kpGauge', (m.geomagnetic_kp / 9) * 100, m.geomagnetic_kp >= 5 ? 'var(--accent-red)' : 'var(--accent-green)');
+
+  document.getElementById('swVal').innerHTML = Math.round(m.solar_wind_speed_km_s) + '<span class="unit">km/s</span>';
+  document.getElementById('swDensity').textContent = m.solar_wind_density_p_cm3 != null ? m.solar_wind_density_p_cm3.toFixed(1) : '—';
+  if(a.nasa_donki_cme) document.getElementById('cmeVal').textContent = a.nasa_donki_cme;
+  
+  document.getElementById('magVal').innerHTML = (m.magnetometer_bt || 0).toFixed(1) + '<span class="unit">nT</span>';
+  document.getElementById('xrayVal').innerHTML = (m.xray_flux || 0).toExponential(2) + '<span class="unit">W/m²</span>';
+
+  // Update Mock Data Fields
+  document.getElementById('jesterCoherence').innerHTML = Math.round(mock.coherence) + '<span class="unit">%</span>';
+  setGauge('jesterGauge', mock.coherence, mock.coherence < 80 ? 'var(--accent-red)' : 'var(--accent-green)');
+  document.getElementById('jesterLoad').textContent = mock.coherence < 80 ? 'ANALYZING_ANOMALY' : 'NORMAL';
+  document.getElementById('jesterLoad').style.color = mock.coherence < 80 ? 'var(--accent-red)' : 'var(--accent-green)';
+
+
+  if (m.seismic_mag) {
+    document.getElementById('quakeVal').textContent = 'M ' + m.seismic_mag.toFixed(1);
+    document.getElementById('quakePlace').textContent = m.seismic_location.toUpperCase();
+  }
+
+  // Update FFT Chart
+  const dominantAmp = a.fft_dominant_amplitude || 0;
+  fftChart.data.datasets[0].data = [
+      Math.random() * dominantAmp * 0.5,
+      Math.random() * dominantAmp * 0.8,
+      dominantAmp, 
+      Math.random() * dominantAmp * 0.8,
+      Math.random() * dominantAmp * 0.5
+  ];
+  fftChart.update();
+
+  const isAnomaly = a.anomaly_detected;
+  document.getElementById('anomalyBanner').classList.toggle('show', isAnomaly);
+  
+  // Visual effects & Sonification
+  drawParticles(isAnomaly);
+  
+  if (isAnomaly) {
+      if (brainMesh) brainMesh.material.color.setHex(0xff3366);
+      if (brainInner) brainInner.material.color.setHex(0xffd700);
+      
+      if (!alarmPlayed) {
+          alarm.play().catch(e => console.log("Audio play blocked by browser."));
+          alarmPlayed = true;
+      }
+      if (isAudioEnabled) {
+          oscillator.frequency.setTargetAtTime(800 + (dominantAmp * 100), audioCtx.currentTime, 0.1);
+          oscillator.type = 'sawtooth';
+      }
+  } else {
+      if (brainMesh) brainMesh.material.color.setHex(0x00ff88);
+      if (brainInner) brainInner.material.color.setHex(0x00e5ff);
+      
+      alarmPlayed = false;
+      if (isAudioEnabled) {
+          // Base drone modulated by entropy
+          oscillator.frequency.setTargetAtTime(432 + ((m.shannon_entropy - 7.95) * 1000), audioCtx.currentTime, 0.5);
+          oscillator.type = 'sine';
+      }
+  }
+
+  // Update Chart History
+  history.push({ entropy: m.shannon_entropy, anomaly: isAnomaly });
+  if (history.length > MAX_POINTS) history.shift();
+  
+  drawChart();
+  logTick(payload);
+}
+
+// Fallback simulator if websocket is completely dead, just so the UI looks alive
+let simInterval;
+function startSimulation() {
+    if (simInterval) return;
+    simInterval = setInterval(() => {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+            clearInterval(simInterval);
+            simInterval = null;
+            return;
+        }
+        // Simulate a payload
+        const isAnomaly = Math.random() > 0.95;
+        const baseH = 7.99 + Math.random() * 0.01;
+        const payload = {
+            timestamp: Date.now() / 1000,
+            metrics: {
+                shannon_entropy: isAnomaly ? 7.95 + Math.random() * 0.02 : baseH,
+                entropy_source: 'SIMULATION_MODE',
+                geomagnetic_kp: isAnomaly ? 5 + Math.random() * 4 : Math.random() * 3,
+                solar_wind_speed_km_s: 300 + Math.random() * 200,
+                solar_wind_density_p_cm3: 2 + Math.random() * 5,
+                magnetometer_bt: 5 + Math.random() * 2,
+                xray_flux: 1e-8 + Math.random() * 1e-9,
+                seismic_mag: 4.5 + Math.random() * 2,
+                seismic_location: 'SIMULATED REGION, EARTH'
+            },
+            analytics: {
+                rolling_z_score: (isAnomaly ? 3 + Math.random() * 2 : Math.random()).toFixed(2),
+                pearson_r_quantum_kp: isAnomaly ? 0.7 + Math.random() * 0.2 : Math.random() * 0.2 - 0.1,
+                pearson_r_quantum_solar_wind: Math.random() * 0.2 - 0.1,
+                fft_dominant_amplitude: isAnomaly ? 2.0 : 0.5,
+                anomaly_detected: isAnomaly
+            }
+        };
+        render(payload);
+    }, 2000);
+}
+
+
+let ws;
+let reconnectAttempts = 0;
+
+function connect() {
+  if (ws) {
+      ws.close();
+  }
+  
+  statusText.textContent = 'CONNECTING TO ENGINE...';
+  statusText.style.color = 'var(--accent-gold)';
+  dot.className = 'dot';
+  dot.style.background = 'var(--accent-gold)';
+
+  ws = new WebSocket(WS_URL);
+
+  ws.onopen = () => {
+    reconnectAttempts = 0;
+    dot.className = 'dot live';
+    dot.style.background = ''; // use css class
+    statusText.textContent = 'LINK_ESTABLISHED :: ' + WS_URL;
+    statusText.style.color = 'var(--accent-green)';
+    if (simInterval) {
+        clearInterval(simInterval);
+        simInterval = null;
+    }
+  };
+
+  ws.onmessage = (evt) => {
+    try {
+      render(JSON.parse(evt.data));
+    } catch (e) {
+      console.error('Invalid payload format', e);
+    }
+  };
+
+  ws.onclose = () => {
+    dot.className = 'dot down';
+    dot.style.background = '';
+    
+    // Exponential backoff
+    const delay = Math.min(1000 * Math.pow(1.5, reconnectAttempts), 10000);
+    statusText.textContent = `CONNECTION_LOST :: RETRYING IN ${Math.round(delay/1000)}s...`;
+    statusText.style.color = 'var(--accent-red)';
+    
+    reconnectAttempts++;
+    
+    // Start simulation if we can't connect so the dashboard isn't dead
+    if (reconnectAttempts > 2) {
+        startSimulation();
+    }
+    
+    setTimeout(connect, delay);
+  };
+
+  ws.onerror = () => {
+    // Errors will trigger onclose
+  };
+}
+
+// Initial Setup
+resizeCanvas();
+connect();
+
+</script>
+</body>
+</html>

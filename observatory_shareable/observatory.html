@@ -1,0 +1,1043 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>JESTER V1000 - OMNISCIENCE OBSERVATORY</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;500;700;900&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<style>
+  :root {
+    --bg-base: #030704;
+    --grid-color: rgba(0, 255, 136, 0.05);
+    --panel-bg: rgba(5, 15, 10, 0.6);
+    --panel-border: rgba(0, 255, 136, 0.15);
+    --panel-glow: rgba(0, 255, 136, 0.05);
+    --text-main: #e0f2e9;
+    --text-muted: #6b8f7d;
+    --accent-green: #00ff88;
+    --accent-green-glow: rgba(0, 255, 136, 0.6);
+    --accent-gold: #ffd700;
+    --accent-red: #ff3366;
+    --accent-cyan: #00e5ff;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0;
+    padding: 0;
+    background-color: var(--bg-base);
+    color: var(--text-main);
+    font-family: 'JetBrains Mono', monospace;
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  /* Matrix grid background */
+  body::before {
+    content: '';
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background-image: 
+      linear-gradient(var(--grid-color) 1px, transparent 1px),
+      linear-gradient(90deg, var(--grid-color) 1px, transparent 1px);
+    background-size: 40px 40px;
+    z-index: -1;
+    pointer-events: none;
+    mask-image: radial-gradient(circle at center, black 40%, transparent 100%);
+    -webkit-mask-image: radial-gradient(circle at center, black 40%, transparent 100%);
+  }
+
+  .wrap {
+    max-width: 1400px;
+    margin: 0 auto;
+    padding: 40px 30px;
+  }
+
+  header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+    border-bottom: 2px solid var(--panel-border);
+    padding-bottom: 20px;
+    margin-bottom: 30px;
+    position: relative;
+  }
+
+  header::after {
+    content: '';
+    position: absolute;
+    bottom: -2px;
+    left: 0;
+    width: 150px;
+    height: 2px;
+    background: var(--accent-green);
+    box-shadow: 0 0 10px var(--accent-green-glow);
+  }
+
+  h1 {
+    font-family: 'Orbitron', sans-serif;
+    font-weight: 900;
+    font-size: 32px;
+    letter-spacing: 0.1em;
+    margin: 0;
+    color: #fff;
+    text-shadow: 0 0 20px var(--accent-green-glow);
+  }
+
+  h1 span.highlight { color: var(--accent-green); }
+
+  .subtitle {
+    font-size: 13px;
+    color: var(--text-muted);
+    margin-top: 8px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+  }
+
+  .status-container {
+    display: flex;
+    align-items: center;
+    gap: 15px;
+    background: rgba(0, 0, 0, 0.4);
+    padding: 8px 16px;
+    border: 1px solid var(--panel-border);
+    border-radius: 4px;
+    backdrop-filter: blur(5px);
+  }
+
+  .status-text {
+    font-size: 12px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--accent-green);
+    font-family: 'Orbitron', sans-serif;
+  }
+
+  .dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: var(--text-muted);
+    transition: all 0.3s ease;
+  }
+
+  .dot.live {
+    background: var(--accent-green);
+    box-shadow: 0 0 12px var(--accent-green);
+    animation: pulse-green 1.5s infinite alternate;
+  }
+
+  .dot.down {
+    background: var(--accent-red);
+    box-shadow: 0 0 12px var(--accent-red);
+  }
+
+  @keyframes pulse-green {
+    0% { transform: scale(0.9); opacity: 0.7; }
+    100% { transform: scale(1.1); opacity: 1; box-shadow: 0 0 20px var(--accent-green); }
+  }
+
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(12, 1fr);
+    gap: 20px;
+  }
+
+  .panel {
+    background: var(--panel-bg);
+    border: 1px solid var(--panel-border);
+    border-radius: 8px;
+    padding: 24px;
+    position: relative;
+    backdrop-filter: blur(10px);
+    box-shadow: inset 0 0 20px var(--panel-glow), 0 4px 15px rgba(0,0,0,0.5);
+    transition: transform 0.2s, box-shadow 0.2s;
+  }
+
+  .panel:hover {
+    box-shadow: inset 0 0 30px rgba(0, 255, 136, 0.1), 0 8px 25px rgba(0,0,0,0.6);
+    border-color: rgba(0, 255, 136, 0.3);
+  }
+
+  .panel::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0;
+    width: 100%; height: 2px;
+    background: linear-gradient(90deg, transparent, var(--accent-green), transparent);
+    opacity: 0;
+    transition: opacity 0.3s;
+  }
+
+  .panel:hover::before { opacity: 0.5; }
+
+  .panel-label {
+    font-family: 'Orbitron', sans-serif;
+    font-size: 11px;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    margin-bottom: 15px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+
+  .panel-label .tag {
+    color: var(--accent-cyan);
+    font-size: 10px;
+    background: rgba(0, 229, 255, 0.1);
+    padding: 2px 6px;
+    border-radius: 3px;
+    border: 1px solid rgba(0, 229, 255, 0.2);
+  }
+
+  .big-readout {
+    font-family: 'Orbitron', sans-serif;
+    font-weight: 700;
+    font-size: 42px;
+    color: #fff;
+    line-height: 1;
+    text-shadow: 0 0 15px rgba(255,255,255,0.2);
+  }
+
+  .unit { font-size: 14px; color: var(--accent-green); font-weight: 500; margin-left: 8px; font-family: 'JetBrains Mono', monospace;}
+
+  .sub-readout {
+    font-size: 12px;
+    color: var(--text-muted);
+    margin-top: 12px;
+    line-height: 1.6;
+  }
+
+  .sub-readout b { color: var(--text-main); font-weight: 700; }
+
+  .chart-panel { grid-column: span 12; padding: 0; overflow: hidden; }
+  .chart-header { padding: 20px 24px 0 24px; }
+  
+  #stripchart {
+    width: 100%;
+    height: 200px;
+    display: block;
+    background: linear-gradient(180deg, rgba(0,0,0,0) 0%, rgba(0,255,136,0.02) 100%);
+  }
+
+  .col-3 { grid-column: span 3; }
+  .col-4 { grid-column: span 4; }
+  .col-6 { grid-column: span 6; }
+  .col-8 { grid-column: span 8; }
+  .col-12 { grid-column: span 12; }
+
+  @media (max-width: 1024px) {
+    .col-3 { grid-column: span 6; }
+    .col-4 { grid-column: span 6; }
+    .col-8 { grid-column: span 12; }
+  }
+  @media (max-width: 768px) {
+    .col-3, .col-4, .col-6 { grid-column: span 12; }
+  }
+
+  .gauge-container {
+    margin-top: 15px;
+    position: relative;
+  }
+
+  .gauge-track {
+    width: 100%;
+    height: 8px;
+    background: rgba(255,255,255,0.05);
+    border-radius: 4px;
+    overflow: hidden;
+    position: relative;
+    border: 1px solid rgba(255,255,255,0.1);
+  }
+
+  .gauge-fill {
+    height: 100%;
+    border-radius: 4px;
+    transition: width 0.8s cubic-bezier(0.16, 1, 0.3, 1), background 0.5s ease;
+    box-shadow: inset 0 0 5px rgba(255,255,255,0.5);
+  }
+
+  .gauge-markers {
+    display: flex;
+    justify-content: space-between;
+    font-size: 9px;
+    color: var(--text-muted);
+    margin-top: 4px;
+  }
+
+  .anomaly-banner {
+    grid-column: span 12;
+    display: none;
+    padding: 15px 24px;
+    border: 1px solid var(--accent-red);
+    background: rgba(255, 51, 102, 0.1);
+    color: var(--accent-red);
+    font-size: 14px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    border-radius: 8px;
+    align-items: center;
+    gap: 15px;
+    box-shadow: 0 0 20px rgba(255, 51, 102, 0.2);
+    animation: flash-banner 2s infinite;
+  }
+  .anomaly-banner.show { display: flex; }
+
+  @keyframes flash-banner {
+    0%, 100% { box-shadow: 0 0 20px rgba(255, 51, 102, 0.2); background: rgba(255, 51, 102, 0.1); }
+    50% { box-shadow: 0 0 40px rgba(255, 51, 102, 0.4); background: rgba(255, 51, 102, 0.2); }
+  }
+
+  .log-panel { grid-column: span 12; }
+  #log {
+    max-height: 200px;
+    overflow-y: auto;
+    font-size: 12px;
+    color: var(--text-muted);
+    line-height: 1.8;
+  }
+  
+  /* Custom Scrollbar */
+  ::-webkit-scrollbar { width: 8px; }
+  ::-webkit-scrollbar-track { background: rgba(0,0,0,0.2); border-radius: 4px; }
+  ::-webkit-scrollbar-thumb { background: rgba(0,255,136,0.2); border-radius: 4px; }
+  ::-webkit-scrollbar-thumb:hover { background: rgba(0,255,136,0.4); }
+
+  #log div { padding: 4px 0; border-bottom: 1px solid rgba(255,255,255,0.02); }
+  #log div span.val { color: var(--text-main); }
+  #log div span.ts { color: var(--accent-green); opacity: 0.7; }
+  #log div.flag { color: var(--accent-gold); }
+  #log div.flag span.val { color: var(--accent-red); }
+
+  footer {
+    margin-top: 40px;
+    font-size: 12px;
+    color: var(--text-muted);
+    line-height: 1.7;
+    border-top: 1px solid var(--panel-border);
+    padding-top: 20px;
+    text-align: center;
+  }
+  footer a { color: var(--accent-cyan); text-decoration: none; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <div>
+      <h1>OMNISCIENCE <span class="highlight">OBSERVATORY</span></h1>
+      <div class="subtitle">QUANTUM ENTROPY // MACRO-STATE // JESTER CORE TELEMETRY</div>
+    </div>
+    <div class="status-container">
+      <div class="dot" id="statusDot"></div>
+      <span class="status-text" id="statusText">INITIALIZING_</span>
+    </div>
+  </header>
+
+  <div class="grid">
+
+    <!-- PRIMARY DIRECTIVE PANEL -->
+    <div class="panel col-6" style="text-align: center; border-color: var(--accent-gold); box-shadow: inset 0 0 20px rgba(255, 215, 0, 0.1); display: flex; flex-direction: column; justify-content: center;">
+      <div class="panel-label" style="justify-content: center; color: var(--accent-gold);"><span>PRIMARY DIRECTIVE</span></div>
+      <div class="big-readout" style="font-size: 24px; letter-spacing: 0.2em; color: var(--accent-gold);">MONITOR MACRO-STATE TELEMETRY</div>
+      <div style="display: flex; gap: 20px; justify-content: center; margin-top: 15px; flex-wrap: wrap;">
+        <button id="retrainBtn" style="background: transparent; border: 1px solid var(--accent-green); color: var(--accent-green); padding: 10px 20px; font-family: 'Orbitron'; font-weight: 700; letter-spacing: 0.1em; cursor: pointer; transition: 0.3s; border-radius: 4px;">FORCE ML RETRAIN</button>
+        <button id="audioBtn" style="background: transparent; border: 1px solid var(--accent-cyan); color: var(--accent-cyan); padding: 10px 20px; font-family: 'Orbitron'; font-weight: 700; letter-spacing: 0.1em; cursor: pointer; transition: 0.3s; border-radius: 4px;">ENABLE SONIFICATION</button>
+      </div>
+    </div>
+
+    <!-- 3D HOLOGRAM PANEL -->
+    <div class="panel col-6" style="padding: 0; overflow: hidden; min-height: 200px; display: flex; justify-content: center; align-items: center; position: relative;">
+      <div style="position: absolute; top: 15px; left: 24px; font-family: 'Orbitron'; font-size: 11px; letter-spacing: 0.15em; color: var(--accent-cyan); z-index: 10;">DIMENSIONAL PROJECTION</div>
+      <div id="canvas-container" style="width: 100%; height: 100%; position: absolute; top: 0; left: 0;"></div>
+    </div>
+
+    <div class="anomaly-banner" id="anomalyBanner">
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>
+      MACRO-STATE ANOMALY DETECTED — CORRELATION THRESHOLD EXCEEDED
+    </div>
+
+    <!-- MAIN CHART -->
+    <div class="panel chart-panel">
+      <div class="chart-header">
+        <div class="panel-label">
+          <span>REAL-TIME ENTROPY TRACE (H)</span>
+          <span class="tag" id="entropySourceTag">SOURCE: SCANNING...</span>
+        </div>
+      </div>
+      <canvas id="stripchart"></canvas>
+    </div>
+
+    <!-- ROW 1: PRIMARY METRICS -->
+    <div class="panel col-4">
+      <div class="panel-label"><span>QUANTUM ENTROPY</span></div>
+      <div class="big-readout" id="entropyVal">0.0000<span class="unit">bits</span></div>
+      <div class="sub-readout">ROLLING Z-SCORE: <b id="zscoreVal" style="color: var(--accent-cyan)">0.00</b></div>
+    </div>
+
+    <div class="panel col-4">
+      <div class="panel-label"><span>OS CPU LOAD</span></div>
+      <div class="big-readout" id="cpuVal">0.0<span class="unit">%</span></div>
+      <div class="gauge-container">
+        <div class="gauge-track"><div class="gauge-fill" id="cpuGauge" style="width:0%; background: var(--accent-cyan);"></div></div>
+      </div>
+      <div class="sub-readout">SYSTEM TELEMETRY</div>
+    </div>
+
+    <div class="panel col-4">
+      <div class="panel-label"><span>OS RAM LOAD</span></div>
+      <div class="big-readout" id="ramVal">0.0<span class="unit">%</span></div>
+      <div class="gauge-container">
+        <div class="gauge-track"><div class="gauge-fill" id="ramGauge" style="width:0%; background: var(--accent-green);"></div></div>
+      </div>
+      <div class="sub-readout">SYSTEM TELEMETRY</div>
+    </div>
+
+    <!-- ROW 2: ENVIRONMENT -->
+    <div class="panel col-4">
+      <div class="panel-label"><span>GEOMAGNETIC (Kp)</span></div>
+      <div class="big-readout" id="kpVal">0.0</div>
+      <div class="gauge-container">
+        <div class="gauge-track"><div class="gauge-fill" id="kpGauge" style="width:0%; background: var(--accent-green);"></div></div>
+        <div class="gauge-markers"><span>0</span><span>9</span></div>
+      </div>
+      <div class="sub-readout">PLANETARY INDEX</div>
+    </div>
+
+    <div class="panel col-4">
+      <div class="panel-label"><span>PREDICTIVE SPACE WEATHER</span></div>
+      <div class="big-readout" id="predKpVal">0.0</div>
+      <div class="gauge-container">
+        <div class="gauge-track"><div class="gauge-fill" id="predKpGauge" style="width:0%; background: var(--accent-gold);"></div></div>
+        <div class="gauge-markers"><span>0</span><span>9</span></div>
+      </div>
+      <div class="sub-readout" style="color: var(--accent-gold)">INCOMING STORM PROBABILITY</div>
+    </div>
+
+    <div class="panel col-4">
+      <div class="panel-label"><span>SOLAR WIND</span></div>
+      <div class="big-readout" id="swVal">0<span class="unit">km/s</span></div>
+      <div class="sub-readout">DENSITY: <b id="swDensity" style="color: var(--accent-gold)">0.0</b> p/cm³<br>SRC: <b id="swSource">DSCOVR</b></div>
+    </div>
+
+    <div class="panel col-4">
+      <div class="panel-label"><span>GLOBAL INTERNET HEARTBEAT</span></div>
+      <div class="big-readout" id="latencyVal">0.0<span class="unit">ms</span></div>
+      <div class="sub-readout">MACRO-STATE LATENCY JITTER</div>
+    </div>
+
+    <div class="panel col-4">
+      <div class="panel-label"><span>CORR: H × Kp</span></div>
+      <div class="big-readout" id="corrKp">0.000</div>
+      <div class="gauge-container">
+        <div class="gauge-track"><div class="gauge-fill" id="corrKpGauge" style="width:50%; background: var(--accent-cyan);"></div></div>
+      </div>
+      <div class="sub-readout">PEARSON r</div>
+    </div>
+
+    <div class="panel col-4">
+      <div class="panel-label"><span>SEISMIC (M4.5+)</span></div>
+      <div class="big-readout" id="quakeVal">M 0.0</div>
+      <div class="sub-readout" id="quakePlace" style="margin-top: 20px;">AWAITING DATA...</div>
+    </div>
+
+    <!-- ROW 3: THEORETICAL PHYSICS -->
+    <div class="panel col-4">
+      <div class="panel-label"><span>GLOBAL CONSCIOUSNESS (NLP)</span></div>
+      <div class="big-readout" id="sentimentVal">0.000</div>
+      <div class="gauge-container">
+        <div class="gauge-track"><div class="gauge-fill" id="sentimentGauge" style="width:50%; background: var(--accent-cyan);"></div></div>
+        <div class="gauge-markers"><span>-1.0 (CHAOS)</span><span>+1.0 (HARMONY)</span></div>
+      </div>
+      <div class="sub-readout">NEWS SENTIMENT POLARITY</div>
+    </div>
+
+    <div class="panel col-4">
+      <div class="panel-label"><span>QUANTUM ENTANGLEMENT</span></div>
+      <div class="big-readout" id="chshVal">0.000<span class="unit">S</span></div>
+      <div class="sub-readout">CHSH INEQUALITY: <b id="chshViolation" style="color: var(--accent-red)">NO VIOLATION</b></div>
+    </div>
+
+    <div class="panel col-4">
+      <div class="panel-label"><span>SYSTEM CHAOS (LLE)</span></div>
+      <div class="big-readout" id="lleVal">0.000</div>
+      <div class="sub-readout">LARGEST LYAPUNOV EXPONENT</div>
+    </div>
+
+    <!-- ROW 4: DIMENSIONAL CONVERGENCE (Phase 6) -->
+    <div class="panel col-12">
+      <div class="panel-label"><span>FRACTAL MEMORY (HURST EXPONENT)</span></div>
+      <div class="big-readout" id="hurstVal">0.5000</div>
+      <div class="gauge-container">
+        <div class="gauge-track"><div class="gauge-fill" id="hurstGauge" style="width:50%; background: var(--accent-gold);"></div></div>
+        <div class="gauge-markers"><span>0.0 (MEAN-REVERT)</span><span>1.0 (PERSISTENT)</span></div>
+      </div>
+      <div class="sub-readout">UNIVERSE MEMORY STATE: <b id="hurstState" style="color: var(--accent-cyan)">RANDOM WALK</b></div>
+    </div>
+
+    <!-- ROW 5: AI COUNCIL CORE -->
+    <div class="panel col-4" style="border-color: #00ff88; box-shadow: inset 0 0 20px rgba(0, 255, 136, 0.05);">
+      <div class="panel-label"><span style="color: #00ff88;">QUANTUM ARCHITECT AI</span></div>
+      <div id="aiQuantum" style="font-size: 12px; line-height: 1.6; color: var(--text-main); min-height: 80px;">AWAITING SYNTHESIS...</div>
+    </div>
+    <div class="panel col-4" style="border-color: var(--accent-gold); box-shadow: inset 0 0 20px rgba(255, 215, 0, 0.05);">
+      <div class="panel-label"><span style="color: var(--accent-gold);">COSMIC WATCHER AI</span></div>
+      <div id="aiCosmic" style="font-size: 12px; line-height: 1.6; color: var(--text-main); min-height: 80px;">AWAITING SYNTHESIS...</div>
+    </div>
+    <div class="panel col-4" style="border-color: var(--accent-cyan); box-shadow: inset 0 0 20px rgba(0, 229, 255, 0.05);">
+      <div class="panel-label"><span style="color: var(--accent-cyan);">MACRO-SOCIETAL AI</span></div>
+      <div id="aiSocietal" style="font-size: 12px; line-height: 1.6; color: var(--text-main); min-height: 80px;">AWAITING SYNTHESIS...</div>
+    </div>
+    <div class="panel col-12" style="border-color: #ff3366; box-shadow: inset 0 0 30px rgba(255, 51, 102, 0.1);">
+      <div class="panel-label"><span style="color: #ff3366;">STRATEGIC OPTIONS & PREDICTIONS</span></div>
+      <div id="aiOptions" style="font-size: 14px; line-height: 1.6; color: #fff; text-shadow: 0 0 10px rgba(255,51,102,0.4); min-height: 60px;">AWAITING SYNTHESIS...</div>
+    </div>
+
+    <div class="panel col-6">
+      <div class="panel-label"><span>EVOLUTION CYCLES</span></div>
+      <div class="big-readout" id="evoCyclesVal">0</div>
+      <div class="sub-readout">ML KNOWLEDGE ITERATIONS</div>
+    </div>
+
+    <div class="panel col-6">
+      <div class="panel-label"><span>MUTATION RATE</span></div>
+      <div class="big-readout" id="mutationVal">0.0000</div>
+      <div class="sub-readout">NEURAL WEIGHT ADAPTATION VARIANCE</div>
+    </div>
+
+    <!-- ROW 6: FINANCIAL & X-RAY -->
+    <div class="panel col-6">
+      <div class="panel-label"><span>FINANCIAL ENTROPY (BTC)</span></div>
+      <div class="big-readout" id="btcVal">0.0<span class="unit">%</span></div>
+      <div class="sub-readout">MACRO-PSYCHOLOGY VOLATILITY (24H)</div>
+    </div>
+
+    <div class="panel col-6">
+      <div class="panel-label"><span>SOLAR X-RAY FLUX</span></div>
+      <div class="big-readout" id="xrayVal">0.0<span class="unit"></span></div>
+      <div class="sub-readout">NOAA GOES PRIMARY SENSOR</div>
+    </div>
+
+    <!-- ROW 7: LOGS -->
+    <div class="panel log-panel col-12">
+      <div class="panel-label"><span>SYSTEM TELEMETRY LOG</span></div>
+      <div id="log"></div>
+    </div>
+
+  </div>
+
+  <footer>
+    JESTER V1000 PROTOCOL ACTIVE. <br>
+    Connects to Science Engine via <code>ws://localhost:8765</code>. Automatic reconnection enabled.
+  </footer>
+
+</div>
+
+<script>
+const WS_URL = "ws://localhost:8765";
+const MAX_POINTS = 200; // Increased resolution
+const history = [];
+
+const dot = document.getElementById('statusDot');
+const statusText = document.getElementById('statusText');
+const canvas = document.getElementById('stripchart');
+const ctx = canvas.getContext('2d');
+const logEl = document.getElementById('log');
+
+// Smooth number interpolation state
+const tweenState = {
+  entropy: 0,
+  gcp: 0,
+  coherence: 100,
+  kp: 0,
+  sw: 0
+};
+
+function lerp(start, end, amt) {
+  return (1 - amt) * start + amt * end;
+}
+
+function resizeCanvas() {
+  const rect = canvas.getBoundingClientRect();
+  canvas.width = rect.width * devicePixelRatio;
+  canvas.height = rect.height * devicePixelRatio;
+  ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
+}
+window.addEventListener('resize', resizeCanvas);
+
+function drawChart() {
+  const rect = canvas.getBoundingClientRect();
+  const w = rect.width, h = rect.height;
+  ctx.clearRect(0, 0, w, h);
+
+  if (history.length < 2) return;
+
+  const vals = history.map(p => p.entropy);
+  const min = Math.min(...vals) - 0.01;
+  const max = Math.max(...vals) + 0.01;
+  const range = (max - min) || 1;
+
+  // Draw Gridlines
+  ctx.strokeStyle = 'rgba(0, 255, 136, 0.05)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  for (let i = 1; i < 5; i++) {
+    const y = (h / 5) * i;
+    ctx.moveTo(0, y);
+    ctx.lineTo(w, y);
+  }
+  for (let i = 1; i < 20; i++) {
+    const x = (w / 20) * i;
+    ctx.moveTo(x, 0);
+    ctx.lineTo(x, h);
+  }
+  ctx.stroke();
+
+  // Draw Trace Area (Gradient)
+  ctx.beginPath();
+  ctx.moveTo(0, h);
+  history.forEach((p, i) => {
+    const x = (i / (MAX_POINTS - 1)) * w;
+    const y = h - ((p.entropy - min) / range) * h;
+    ctx.lineTo(x, y);
+  });
+  ctx.lineTo(w, h);
+  const gradient = ctx.createLinearGradient(0, 0, 0, h);
+  gradient.addColorStop(0, 'rgba(0, 255, 136, 0.2)');
+  gradient.addColorStop(1, 'rgba(0, 255, 136, 0)');
+  ctx.fillStyle = gradient;
+  ctx.fill();
+
+  // Draw Trace Line
+  ctx.beginPath();
+  ctx.strokeStyle = '#00ff88';
+  ctx.lineWidth = 2;
+  ctx.shadowColor = '#00ff88';
+  ctx.shadowBlur = 10;
+
+  history.forEach((p, i) => {
+    const x = (i / (MAX_POINTS - 1)) * w;
+    const y = h - ((p.entropy - min) / range) * h;
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  });
+  ctx.stroke();
+  ctx.shadowBlur = 0;
+
+  // Draw Anomaly Markers
+  history.forEach((p, i) => {
+    if (!p.anomaly) return;
+    const x = (i / (MAX_POINTS - 1)) * w;
+    const y = h - ((p.entropy - min) / range) * h;
+    ctx.beginPath();
+    ctx.fillStyle = '#ff3366';
+    ctx.shadowColor = '#ff3366';
+    ctx.shadowBlur = 15;
+    ctx.arc(x, y, 4, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.shadowBlur = 0;
+  });
+
+  // Leading Edge Pulse
+  const last = history[history.length - 1];
+  const lx = ( (history.length - 1) / (MAX_POINTS - 1) ) * w;
+  const ly = h - ((last.entropy - min) / range) * h;
+  
+  ctx.beginPath();
+  ctx.fillStyle = '#ffffff';
+  ctx.shadowColor = '#00ff88';
+  ctx.shadowBlur = 20;
+  ctx.arc(lx, ly, 4, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.shadowBlur = 0;
+}
+
+function setGauge(id, pct, color) {
+  const el = document.getElementById(id);
+  el.style.width = Math.max(0, Math.min(100, pct)) + '%';
+  if (color) {
+    el.style.background = color;
+    el.style.boxShadow = `0 0 10px ${color}`;
+  }
+}
+
+function corrColor(r) {
+  const a = Math.abs(r);
+  if (a > 0.6) return 'var(--accent-red)';
+  if (a > 0.35) return 'var(--accent-gold)';
+  return 'var(--accent-cyan)';
+}
+
+function logTick(payload) {
+  const t = new Date(payload.timestamp * 1000).toLocaleTimeString();
+  const div = document.createElement('div');
+  const flagged = payload.analytics.anomaly_detected;
+  
+  if (flagged) div.className = 'flag';
+  
+  // Create a stylized log entry
+  div.innerHTML = `<span class="ts">[${t}]</span> SYSTEM_TICK: `
+    + `H=<span class="val">${payload.metrics.shannon_entropy.toFixed(4)}</span> | `
+    + `Kp=<span class="val">${payload.metrics.geomagnetic_kp}</span> | `
+    + `Z=<span class="val">${payload.analytics.rolling_z_score}</span> `
+    + (flagged ? ' ⚠ <span class="val">[ANOMALY_TRIGGERED]</span>' : '');
+    
+  logEl.prepend(div);
+  while (logEl.children.length > 50) logEl.removeChild(logEl.lastChild);
+}
+
+function render(payload) {
+  const m = payload.metrics;
+  const a = payload.analytics;
+
+  // Update Tween States (in a real app, we'd use requestAnimationFrame to animate these)
+  tweenState.entropy = m.shannon_entropy;
+  tweenState.kp = m.geomagnetic_kp;
+  tweenState.sw = m.solar_wind_speed_km_s;
+
+  // DOM Updates
+  document.getElementById('entropyVal').innerHTML = m.shannon_entropy.toFixed(4) + '<span class="unit">bits</span>';
+  document.getElementById('zscoreVal').textContent = a.rolling_z_score;
+  document.getElementById('entropySourceTag').textContent = 'SOURCE: ' + (m.entropy_source || 'UNKNOWN').toUpperCase();
+
+  document.getElementById('kpVal').textContent = m.geomagnetic_kp.toFixed(1);
+  setGauge('kpGauge', (m.geomagnetic_kp / 9) * 100, m.geomagnetic_kp >= 5 ? 'var(--accent-red)' : 'var(--accent-green)');
+
+  document.getElementById('swVal').innerHTML = Math.round(m.solar_wind_speed_km_s) + '<span class="unit">km/s</span>';
+  document.getElementById('swDensity').textContent = m.solar_wind_density_p_cm3 != null ? m.solar_wind_density_p_cm3.toFixed(1) : '—';
+  document.getElementById('swSource').textContent = (m.solar_wind_source || '—').toUpperCase();
+
+  document.getElementById('corrKp').textContent = a.pearson_r_quantum_kp.toFixed(3);
+  setGauge('corrKpGauge', 50 + a.pearson_r_quantum_kp * 50, corrColor(a.pearson_r_quantum_kp));
+
+  document.getElementById('cpuVal').innerHTML = m.os_cpu_percent.toFixed(1) + '<span class="unit">%</span>';
+  setGauge('cpuGauge', m.os_cpu_percent, m.os_cpu_percent > 80 ? 'var(--accent-red)' : 'var(--accent-cyan)');
+  
+  document.getElementById('ramVal').innerHTML = m.os_ram_percent.toFixed(1) + '<span class="unit">%</span>';
+  setGauge('ramGauge', m.os_ram_percent, m.os_ram_percent > 80 ? 'var(--accent-red)' : 'var(--accent-green)');
+
+
+  if (m.seismic_mag) {
+    document.getElementById('quakeVal').textContent = 'M ' + m.seismic_mag.toFixed(1);
+    document.getElementById('quakePlace').textContent = m.seismic_location.toUpperCase();
+  }
+
+  // Theoretical Physics & Predictive Metrics
+  if (a.global_sentiment !== undefined) {
+    document.getElementById('sentimentVal').textContent = a.global_sentiment.toFixed(3);
+    setGauge('sentimentGauge', 50 + (a.global_sentiment * 50), a.global_sentiment < 0 ? 'var(--accent-red)' : 'var(--accent-green)');
+
+    document.getElementById('chshVal').innerHTML = a.chsh_s_score.toFixed(3) + '<span class="unit">S</span>';
+    const chshViolationEl = document.getElementById('chshViolation');
+    if (a.chsh_s_score > 2.0) {
+        chshViolationEl.textContent = 'VIOLATION (QUANTUM NON-LOCALITY)';
+        chshViolationEl.style.color = 'var(--accent-green)';
+    } else {
+        chshViolationEl.textContent = 'NO VIOLATION (CLASSICAL)';
+        chshViolationEl.style.color = 'var(--accent-red)';
+    }
+
+    document.getElementById('lleVal').textContent = a.lyapunov_exponent.toFixed(3);
+    const lleEl = document.getElementById('lleVal');
+    if (a.lyapunov_exponent > 0) {
+        lleEl.style.color = 'var(--accent-red)';
+        lleEl.style.textShadow = '0 0 15px rgba(255,51,102,0.8)';
+    } else {
+        lleEl.style.color = 'var(--text-main)';
+        lleEl.style.textShadow = '0 0 15px rgba(255,255,255,0.2)';
+    }
+    
+    // Predictive & Latency updates
+    document.getElementById('predKpVal').textContent = a.predictive_kp.toFixed(1);
+    setGauge('predKpGauge', (a.predictive_kp / 9) * 100, a.predictive_kp >= 5 ? 'var(--accent-red)' : 'var(--accent-gold)');
+    
+    document.getElementById('latencyVal').innerHTML = a.internet_latency_ms.toFixed(1) + '<span class="unit">ms</span>';
+
+    if (a.hurst_exponent !== undefined) {
+      document.getElementById('hurstVal').textContent = a.hurst_exponent.toFixed(4);
+      setGauge('hurstGauge', a.hurst_exponent * 100, a.hurst_exponent > 0.6 ? 'var(--accent-red)' : 'var(--accent-gold)');
+      let hState = "RANDOM WALK";
+      if (a.hurst_exponent > 0.6) hState = "PERSISTENT (MEMORY)";
+      if (a.hurst_exponent < 0.4) hState = "MEAN-REVERTING";
+      document.getElementById('hurstState').textContent = hState;
+    }
+    
+    // Phase 9 Updates
+    if (a.ai_quantum) document.getElementById('aiQuantum').textContent = a.ai_quantum;
+    if (a.ai_cosmic) document.getElementById('aiCosmic').textContent = a.ai_cosmic;
+    if (a.ai_societal) document.getElementById('aiSocietal').textContent = a.ai_societal;
+    if (a.ai_options) document.getElementById('aiOptions').textContent = a.ai_options;
+    if (a.btc_24h_change !== undefined) {
+      document.getElementById('btcVal').innerHTML = a.btc_24h_change.toFixed(2) + '<span class="unit">%</span>';
+      document.getElementById('btcVal').style.color = Math.abs(a.btc_24h_change) > 5 ? 'var(--accent-red)' : 'var(--text-main)';
+    }
+    if (a.solar_xray_flux !== undefined) {
+      document.getElementById('xrayVal').innerHTML = a.solar_xray_flux.toExponential(2) + '<span class="unit"></span>';
+      document.getElementById('xrayVal').style.color = a.solar_xray_flux > 1e-5 ? 'var(--accent-red)' : 'var(--text-main)';
+    }
+
+    // Update Sonification & Hologram
+    updateSonification(m.shannon_entropy, a.lyapunov_exponent);
+    updateHologram(a.lyapunov_exponent, a.predictive_kp, m.shannon_entropy);
+  }
+
+  document.getElementById('anomalyBanner').classList.toggle('show', a.anomaly_detected);
+
+  // Update Chart History
+  history.push({ entropy: m.shannon_entropy, anomaly: a.anomaly_detected });
+  if (history.length > MAX_POINTS) history.shift();
+  
+  drawChart();
+  logTick(payload);
+}
+
+
+
+
+let ws;
+let reconnectAttempts = 0;
+
+function connect() {
+  if (ws) {
+      ws.close();
+  }
+  
+  statusText.textContent = 'CONNECTING TO ENGINE...';
+  statusText.style.color = 'var(--accent-gold)';
+  dot.className = 'dot';
+  dot.style.background = 'var(--accent-gold)';
+
+  ws = new WebSocket(WS_URL);
+
+  ws.onopen = () => {
+    reconnectAttempts = 0;
+    dot.className = 'dot live';
+    dot.style.background = ''; // use css class
+    statusText.textContent = 'LINK_ESTABLISHED :: ' + WS_URL;
+    statusText.style.color = 'var(--accent-green)';
+  };
+
+  ws.onmessage = (evt) => {
+    try {
+      render(JSON.parse(evt.data));
+    } catch (e) {
+      console.error('Invalid payload format', e);
+    }
+  };
+
+  ws.onclose = () => {
+    dot.className = 'dot down';
+    dot.style.background = '';
+    
+    // Exponential backoff
+    const delay = Math.min(1000 * Math.pow(1.5, reconnectAttempts), 10000);
+    statusText.textContent = `CONNECTION_LOST :: RETRYING IN ${Math.round(delay/1000)}s...`;
+    statusText.style.color = 'var(--accent-red)';
+    
+    reconnectAttempts++;
+    
+    setTimeout(connect, delay);
+  };
+
+  ws.onerror = () => {
+    // Errors will trigger onclose
+  };
+}
+
+// Retrain Button Listener
+document.getElementById('retrainBtn').addEventListener('click', () => {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ action: "retrain" }));
+    const btn = document.getElementById('retrainBtn');
+    btn.textContent = "RETRAINING...";
+    btn.style.background = "rgba(0, 255, 136, 0.2)";
+    btn.style.color = "#fff";
+    setTimeout(() => {
+      btn.textContent = "FORCE ML RETRAIN";
+      btn.style.background = "transparent";
+      btn.style.color = "var(--accent-green)";
+    }, 2000);
+  }
+});
+
+// Audio Sonification Engine
+let audioCtx;
+let oscBase, oscChaos, chaosGainNode;
+
+document.getElementById('audioBtn').addEventListener('click', () => {
+  const btn = document.getElementById('audioBtn');
+  if (!audioCtx) {
+    initAudio();
+    btn.textContent = "SONIFICATION ACTIVE";
+    btn.style.background = "rgba(0, 229, 255, 0.2)";
+    btn.style.color = "#fff";
+  } else if (audioCtx.state === 'suspended') {
+    audioCtx.resume();
+    btn.textContent = "SONIFICATION ACTIVE";
+    btn.style.background = "rgba(0, 229, 255, 0.2)";
+    btn.style.color = "#fff";
+  } else {
+    audioCtx.suspend();
+    btn.textContent = "ENABLE SONIFICATION";
+    btn.style.background = "transparent";
+    btn.style.color = "var(--accent-cyan)";
+  }
+});
+
+function initAudio() {
+  const AudioContext = window.AudioContext || window.webkitAudioContext;
+  audioCtx = new AudioContext();
+  
+  oscBase = audioCtx.createOscillator();
+  oscChaos = audioCtx.createOscillator();
+  const masterGain = audioCtx.createGain();
+  
+  oscBase.type = 'sine';
+  oscChaos.type = 'sawtooth'; // harsher tone for chaos
+  
+  oscBase.frequency.value = 55; // Deep A1 drone
+  oscChaos.frequency.value = 55;
+  
+  const baseGain = audioCtx.createGain();
+  baseGain.gain.value = 0.5;
+  chaosGainNode = audioCtx.createGain();
+  chaosGainNode.gain.value = 0.0;
+  
+  oscBase.connect(baseGain);
+  oscChaos.connect(chaosGainNode);
+  baseGain.connect(masterGain);
+  chaosGainNode.connect(masterGain);
+  masterGain.connect(audioCtx.destination);
+  
+  oscBase.start();
+  oscChaos.start();
+}
+
+function updateSonification(entropy, lle) {
+  if (!audioCtx || audioCtx.state === 'suspended') return;
+  // Map entropy (7.95 - 8.0) to a slight pitch modulation (55Hz to 80Hz)
+  const eNormalized = Math.max(0, Math.min(1, (entropy - 7.95) / 0.05));
+  const newFreq = 55 + (eNormalized * 25); 
+  oscBase.frequency.setTargetAtTime(newFreq, audioCtx.currentTime, 0.1);
+  
+  // Map chaos (LLE) to dissonance and chaos volume
+  if (lle > 0) {
+      // Dissonant interval
+      oscChaos.frequency.setTargetAtTime(newFreq * 1.414, audioCtx.currentTime, 0.1); // Tritone dissonance
+      chaosGainNode.gain.setTargetAtTime(Math.min(0.8, lle * 0.5), audioCtx.currentTime, 0.1);
+  } else {
+      chaosGainNode.gain.setTargetAtTime(0, audioCtx.currentTime, 0.5);
+  }
+}
+
+// Initial Setup
+resizeCanvas();
+connect();
+
+// --- 3D Hologram Setup ---
+let targetRotationSpeed = 0.01;
+let targetScale = 1.0;
+let vertexGlitch = 0;
+let torusKnot, positionAttribute, originalVertices = [];
+let scene, camera, renderer;
+
+function initHologram() {
+  const container = document.getElementById('canvas-container');
+  if (!container || typeof THREE === 'undefined') return;
+  
+  scene = new THREE.Scene();
+  // We want to fill the panel. The panel is relatively small, so keep camera close
+  camera = new THREE.PerspectiveCamera(50, container.clientWidth / container.clientHeight, 0.1, 1000);
+  camera.position.z = 4;
+
+  renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true });
+  renderer.setSize(container.clientWidth, container.clientHeight);
+  renderer.setPixelRatio(window.devicePixelRatio);
+  container.appendChild(renderer.domElement);
+
+  const geometry = new THREE.TorusKnotGeometry(1, 0.3, 100, 16);
+  const material = new THREE.MeshBasicMaterial({ color: 0x00ff88, wireframe: true, transparent: true, opacity: 0.6 });
+  torusKnot = new THREE.Mesh(geometry, material);
+  scene.add(torusKnot);
+
+  // Save original vertices for glitching
+  positionAttribute = geometry.attributes.position;
+  for (let i = 0; i < positionAttribute.count; i++) {
+    originalVertices.push(new THREE.Vector3().fromBufferAttribute(positionAttribute, i));
+  }
+
+  animateHologram();
+
+  window.addEventListener('resize', () => {
+    if(container && camera && renderer) {
+      camera.aspect = container.clientWidth / container.clientHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(container.clientWidth, container.clientHeight);
+    }
+  });
+}
+
+function animateHologram() {
+  requestAnimationFrame(animateHologram);
+  if (!torusKnot) return;
+  
+  torusKnot.rotation.x += targetRotationSpeed;
+  torusKnot.rotation.y += targetRotationSpeed * 1.5;
+  
+  // Smooth scale
+  torusKnot.scale.lerp(new THREE.Vector3(targetScale, targetScale, targetScale), 0.05);
+
+  // Apply glitch
+  if (vertexGlitch > 0) {
+    for (let i = 0; i < positionAttribute.count; i++) {
+      const orig = originalVertices[i];
+      // Higher glitch = more vertex displacement
+      const jiggleX = (Math.random() - 0.5) * vertexGlitch;
+      const jiggleY = (Math.random() - 0.5) * vertexGlitch;
+      const jiggleZ = (Math.random() - 0.5) * vertexGlitch;
+      positionAttribute.setXYZ(i, orig.x + jiggleX, orig.y + jiggleY, orig.z + jiggleZ);
+    }
+    positionAttribute.needsUpdate = true;
+  } else {
+    // Reset to original if no glitch
+    for (let i = 0; i < positionAttribute.count; i++) {
+      const orig = originalVertices[i];
+      positionAttribute.setXYZ(i, orig.x, orig.y, orig.z);
+    }
+    positionAttribute.needsUpdate = true;
+  }
+
+  renderer.render(scene, camera);
+}
+
+function updateHologram(lle, predKp, entropy) {
+  if (!torusKnot) return;
+  // Rotation speed tied to entropy (scale base rotation by normalized entropy)
+  const eNormalized = Math.max(0, Math.min(1, (entropy - 7.95) / 0.05));
+  targetRotationSpeed = 0.005 + (eNormalized * 0.05);
+  
+  // Scale tied to predictive Kp (expands during storms)
+  targetScale = 1.0 + (predKp / 9.0) * 1.5;
+  
+  // Vertex Glitch tied to Chaos (LLE)
+  if (lle > 0) {
+    vertexGlitch = lle * 0.5;
+    torusKnot.material.color.setHex(0xff3366); // Turn red during chaos
+  } else {
+    vertexGlitch = 0;
+    torusKnot.material.color.setHex(0x00ff88); // Green normally
+  }
+}
+
+// Call init on load
+setTimeout(initHologram, 500);
+
+</script>
+</body>
+</html>

@@ -1,0 +1,221 @@
+import React, { useState, useEffect, useRef, Suspense } from 'react';
+import { Canvas } from '@react-three/fiber';
+import { PerspectiveCamera, Stars } from '@react-three/drei';
+import { motion, AnimatePresence } from 'framer-motion';
+import { Mic, MicOff, Zap, Activity, Cpu, Database, Terminal, Shield, Globe, Trash2, Send, Eye, Volume2, Volume1, Lock, Search, Play, Brain, Settings } from 'lucide-react';
+import JesterBrain from './JesterBrain';
+import MatrixRain from './MatrixRain';
+import SelfAwarenessTest from './components/SelfAwarenessTest';
+
+function App() {
+  const [bootSequence, setBootSequence] = useState(true);
+  const [isListening, setIsListening] = useState(false);
+  const [isSpeaking, setIsSpeaking] = useState(false);
+  const [transcript, setTranscript] = useState('');
+  const [response, setResponse] = useState('');
+  const [vitals, setVitals] = useState({ cpu: 0, ram: 0, status: 'OFFLINE', model: 'N/A', logic_core: 'OFFLINE' });
+  const [status, setStatus] = useState('INITIALIZING');
+  const [history, setHistory] = useState([]);
+  const [input, setInput] = useState('');
+  const [showVision, setShowVision] = useState(false);
+  const [diagnostics, setDiagnostics] = useState(null);
+  const videoRef = useRef(null);
+  const recognitionRef = useRef(null);
+  const tts = window.speechSynthesis;
+  const autoRestart = useRef(false);
+
+  // MATRIX NEO THEME: Neon Green & Black
+  const theme = { bg: '#000000', main: '#00FF00', sec: '#008F11', err: '#FF003C' };
+
+  const fetchHistory = async () => {
+    try {
+      const res = await fetch('/api/history?limit=20');
+      const data = await res.json();
+      if (!data.error) setHistory(data);
+    } catch (e) { console.error('HISTORY_SYNC_FAILED'); }
+  };
+
+  const runDiagnostics = async () => {
+    setDiagnostics('RUNNING_MATRIX_DIAGNOSTICS...');
+    let report = [];
+    try {
+      const res = await fetch('/api/pulse');
+      const data = await res.json();
+      report.push(`[PASS] LOGIC_CORE: $ {data.logic_core}`);
+      report.push(`[PASS] PRIMARY_MODEL: $ {data.model}`);
+      report.push(`[PASS] CPU_LOAD: $ {data.cpu}%`);
+      report.push(`[PASS] RAM_USAGE: $ {data.ram}%`);
+    } catch { report.push('[FAIL] CORE_CONNECTION_SEVERED'); }
+    setDiagnostics(report.join('\n'));
+    setTimeout(() => setDiagnostics(null), 8000);
+  };
+
+  useEffect(() => {
+    const Speech = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (Speech) {
+      const rec = new Speech();
+      rec.continuous = true;
+      rec.interimResults = true;
+      rec.onresult = (e) => {
+        let text = '';
+        for (let i = e.resultIndex; i < e.results.length; i++) {
+          if (e.results[i].isFinal) handleSend(e.results[i][0].transcript);
+          else text += e.results[i][0].transcript;
+        }
+        setTranscript(text);
+      };
+      rec.onstart = () => setIsListening(true);
+      rec.onend = () => {
+        setIsListening(false);
+        if (autoRestart.current) setTimeout(() => { try { rec.start(); } catch(err) {} }, 100);
+      };
+      recognitionRef.current = rec;
+    }
+    fetchHistory();
+  }, []);
+
+  useEffect(() => {
+    const pulse = () => {
+      fetch('/api/pulse').then(r => r.json()).then(d => { setVitals(d); setStatus('THE_ONE_ONLINE'); }).catch(() => setStatus('SIGNAL_LOST'));
+    };
+    const int = setInterval(pulse, 3000);
+    pulse();
+    
+  if (bootSequence) return <SelfAwarenessTest onComplete={() => setBootSequence(false)} />;
+
+return () => clearInterval(int);
+  }, []);
+
+  const speak = (txt) => {
+    tts.cancel();
+    const ut = new SpeechSynthesisUtterance(txt);
+    ut.pitch = 0.8;
+    ut.rate = 1.1;
+    ut.onstart = () => setIsSpeaking(true);
+    ut.onend = () => setIsSpeaking(false);
+    tts.speak(ut);
+  };
+
+  const handleSend = async (msg) => {
+    if (!msg.trim()) return;
+    setStatus('CALCULATING...');
+    try {
+      let payload = { message: msg };
+      if (msg === 'take the red pill') payload = { message: 'take_pill', tool_args: { pill_type: 'red' } };
+
+      const res = await fetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: msg }) });
+      const data = await res.json();
+      setResponse(data.response);
+      speak(data.response);
+      fetchHistory();
+      setStatus('THE_ONE_ONLINE');
+    } catch (e) {
+      setStatus('CORE_ERROR');
+      setResponse('ERROR: SYSTEM FAILURE.');
+    }
+  };
+
+  const togglePin = async (id, pinned) => {
+    await fetch('/api/pin', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id, pinned: !pinned }) });
+    fetchHistory();
+  };
+
+  const purge = async () => {
+    if(window.confirm('PURGE UNPINNED MEMORY?')) {
+      await fetch('/api/reset', { method: 'POST' });
+      fetchHistory();
+      setResponse('UNPINNED_MEMORY_PURGED');
+    }
+  };
+
+  const hubActions = [
+    { icon: <Eye size={18}/>, label: 'RED PILL', cmd: 'take_pill', args: { pill_type: 'red' } },
+    { icon: <Lock size={18}/>, label: 'BLUE PILL', cmd: 'take_pill', args: { pill_type: 'blue' } },
+    { icon: <Activity size={18}/>, label: 'REPORT', cmd: 'run system diagnostics' },
+    { icon: <Globe size={18}/>, label: 'SEARCH', cmd: 'search the web for latest AI breakthroughs' },
+  ];
+
+  return (
+    <div style={{ backgroundColor: theme.bg, color: theme.main, height: '100vh', width: '100vw', overflow: 'hidden', fontFamily: 'monospace' }}>
+      <MatrixRain color={theme.main} />
+
+      <AnimatePresence>
+        {diagnostics && (
+          <motion.div initial={{opacity:0, scale:0.9}} animate={{opacity:1, scale:1}} exit={{opacity:0}} style={{ position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', background: 'rgba(0,15,0,0.95)', border: '1px solid ' + theme.main, padding: '30px', zIndex: 100, borderRadius: '10px', boxShadow: '0 0 50px ' + theme.sec }}>
+            <h2 style={{ color: theme.main, marginBottom: '20px', borderBottom: '1px solid ' + theme.main }}>NEURAL_DIAG_REPORT</h2>       
+            <pre style={{ fontSize: '0.9rem' }}>{diagnostics}</pre>
+            <button onClick={()=>setDiagnostics(null)} style={{ marginTop: '20px', width: '100%', padding: '10px', background: theme.main, color: '#000', border: 'none', cursor: 'pointer', fontWeight: 'bold' }}>ACKNOWLEDGE</button>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <div style={{ position: 'absolute', inset: 0, zIndex: 0 }}>
+        <Canvas>
+          <PerspectiveCamera makeDefault position={[0, 0, 5]} />
+          <Stars radius={100} depth={50} count={3000} factor={4} saturation={1} fade speed={1} />
+          <Suspense fallback={null}><JesterBrain isSpeaking={isSpeaking} isListening={isListening} color={theme.main} /></Suspense>        
+        </Canvas>
+      </div>
+
+      <div style={{ position: 'relative', zIndex: 10, height: '100%', display: 'flex', flexDirection: 'column', pointerEvents: 'none' }}>  
+        <header style={{ padding: '15px 30px', display: 'flex', justifyContent: 'space-between', background: 'rgba(0,10,0,0.85)', borderBottom: '1px solid ' + theme.sec }}>
+          <div>
+            <h1 style={{ margin: 0, fontSize: '1.2rem', letterSpacing: '8px', color: theme.main }}>JESTER_V084: MATRIX RESURRECTIONS</h1>
+            <div style={{ fontSize: '0.65rem', opacity: 0.8, color: theme.sec }}>MODEL: {vitals.model} | STATUS: {status}</div>
+          </div>
+          <div style={{ display: 'flex', gap: '20px', fontSize: '0.85rem', alignItems: 'center', pointerEvents: 'auto' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}><Cpu size={14}/> {vitals.cpu}%</div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}><Database size={14}/> {vitals.ram}%</div>
+            <button onClick={runDiagnostics} style={{ background: 'none', border: '1px solid ' + theme.sec, color: theme.main, padding: '4px 10px', borderRadius: '4px', cursor: 'pointer', fontSize: '0.7rem' }}>DIAGNOSTICS</button>
+            <button onClick={purge} style={{ color: theme.err, background: 'none', border: 'none', cursor: 'pointer' }}><Trash2 size={18}/></button>
+          </div>
+        </header>
+
+        <main style={{ flex: 1, display: 'flex', padding: '15px', gap: '15px', overflow: 'hidden', pointerEvents: 'auto' }}>
+          <section style={{ width: '320px', background: 'rgba(0,15,0,0.7)', border: '1px solid ' + theme.sec, padding: '15px', borderRadius: '8px', display: 'flex', flexDirection: 'column' }}>
+            <div style={{ fontSize: '0.75rem', marginBottom: '10px', color: theme.sec, display: 'flex', justifyContent: 'space-between' }}>
+               <span>NEURAL_MEMORY</span>
+               <Activity size={12} />
+            </div>
+            <div style={{ flex: 1, overflowY: 'auto', fontSize: '0.7rem' }}>
+              {history.map((h, i) => (
+                <div key={h.id || i} style={{ marginBottom: '10px', padding: '8px', background: 'rgba(0,0,0,0.3)', borderRadius: '4px', borderLeft: '3px solid ' + (h.role === 'user' ? theme.sec : theme.main), position: 'relative' }}>
+                  <div style={{ fontWeight: 'bold', fontSize: '0.6rem', marginBottom: '3px', color: h.role === 'user' ? theme.sec : theme.main }}>{h.role.toUpperCase()}</div>
+                  {h.content}
+                  <button onClick={() => togglePin(h.id, h.pinned)} style={{ position: 'absolute', top: '5px', right: '5px', background: 'none', border: 'none', color: h.pinned ? theme.main : theme.sec, cursor: 'pointer' }}>
+                    <Lock size={10} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          </section>
+
+          <section style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center' }}>
+            <AnimatePresence mode='wait'>
+              <motion.div key={response} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} style={{ textAlign: 'center', maxWidth: '80%', background: 'rgba(0,0,0,0.6)', padding: '30px', borderRadius: '15px', border: '1px solid ' + theme.sec + '44' }}>
+                <div style={{ fontSize: '1.5rem', color: theme.main, textShadow: '0 0 10px ' + theme.sec }}>{response || 'STANDBY_FOR_INPUT'}</div>
+                {transcript && <div style={{ marginTop: '15px', fontSize: '0.9rem', color: theme.sec, opacity: 0.8 }}>{transcript}</div>}  
+              </motion.div>
+            </AnimatePresence>
+
+            <div style={{ marginTop: '30px', display: 'flex', gap: '15px' }}>
+              <button onClick={() => { isListening ? recognitionRef.current.stop() : recognitionRef.current.start(); }} style={{ background: isListening ? theme.err : 'rgba(0,0,0,0.8)', border: '1px solid ' + theme.main, color: isListening ? '#fff' : theme.main, padding: '15px 40px', borderRadius: '30px', cursor: 'pointer', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '10px' }}>{isListening ? <><MicOff size={20}/> STOP</> : <><Mic size={20}/> LISTEN</>}</button>
+
+              <div style={{ display: 'flex', border: '1px solid ' + theme.sec, borderRadius: '30px', overflow: 'hidden', background: 'rgba(0,0,0,0.8)' }}>
+                <input value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => e.key === 'Enter' && (handleSend(input), setInput(''))} style={{ background: 'none', border: 'none', color: '#fff', padding: '12px 25px', outline: 'none', width: '300px' }} placeholder='ENTER_COMMAND...' />
+                <button onClick={() => { handleSend(input); setInput(''); }} style={{ background: theme.sec, border: 'none', color: '#000', padding: '0 25px', cursor: 'pointer' }}><Send size={20} /></button>
+              </div>
+            </div>
+
+            <div style={{ marginTop: '40px', display: 'flex', gap: '15px' }}>
+              {hubActions.map((a, i) => (
+                <button key={i} onClick={() => handleSend(a.cmd)} style={{ background: 'rgba(0,10,0,0.5)', border: '1px solid ' + theme.sec + '44', color: theme.sec, padding: '10px', borderRadius: '8px', cursor: 'pointer', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '5px', width: '80px', fontSize: '0.6rem' }} onMouseEnter={e => e.currentTarget.style.borderColor = theme.main} onMouseLeave={e => e.currentTarget.style.borderColor = theme.sec + '44'}>{a.icon}<span>{a.label}</span></button>
+              ))}
+            </div>
+          </section>
+        </main>
+      </div>
+    </div>
+  );
+}
+export default App;

@@ -1,0 +1,369 @@
+import os
+import sys
+import datetime
+import psutil
+import pyautogui
+import base64
+import io
+import json
+import time
+import subprocess
+import pyperclip
+import cv2
+import numpy as np
+from dotenv import load_dotenv
+from loguru import logger
+from PIL import Image
+from duckduckgo_search import DDGS
+from openai import OpenAI
+import memory_core
+import safeguards
+
+# Load environment variables FIRST
+load_dotenv(override=True)
+
+print('?? Starting Pipecat bot (JESTER PROTOCOL V007: QUANTUM SPECTRE)...')
+
+# Verify keys
+if not os.getenv('DEEPGRAM_API_KEY'): sys.exit(1)
+if not os.getenv('OPENAI_API_KEY'): sys.exit(1)
+if not os.getenv('CARTESIA_API_KEY'): sys.exit(1)
+
+vision_client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
+
+logger.info('Loading Components...')
+from pipecat.audio.turn.smart_turn.local_smart_turn_v3 import LocalSmartTurnAnalyzerV3
+from pipecat.audio.vad.silero import SileroVADAnalyzer
+from pipecat.audio.vad.vad_analyzer import VADParams
+from pipecat.frames.frames import LLMRunFrame
+from pipecat.pipeline.pipeline import Pipeline
+from pipecat.pipeline.runner import PipelineRunner
+from pipecat.pipeline.task import PipelineParams, PipelineTask
+from pipecat.processors.aggregators.llm_context import LLMContext
+from pipecat.processors.aggregators.llm_response_universal import LLMContextAggregatorPair
+from pipecat.processors.frameworks.rtvi import RTVIConfig, RTVIObserver, RTVIProcessor
+from pipecat.runner.types import RunnerArguments
+from pipecat.runner.utils import create_transport
+from pipecat.services.cartesia.tts import CartesiaTTSService
+from pipecat.services.deepgram.stt import DeepgramSTTService
+from pipecat.services.openai.llm import OpenAILLMService
+from pipecat.transports.base_transport import BaseTransport, TransportParams
+
+logger.info('? All components loaded successfully!')
+
+# BLACK BOX RECORDER
+BLACK_BOX_FILE = 'BLACK_BOX.log'
+def log_action(tool_name, args):
+    with open(BLACK_BOX_FILE, 'a') as f:
+        timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        f.write(f'[{timestamp}] TOOL: {tool_name} ARGS: {str(args)}\\n')
+
+# --- OMEGA TOOLS ---
+
+async def get_time(function_name, tool_call_id, args, llm, context, result_callback):
+    await result_callback({'time': datetime.datetime.now().strftime('%I:%M %p')})
+
+async def get_status(function_name, tool_call_id, args, llm, context, result_callback):
+    cpu = psutil.cpu_percent()
+    ram = psutil.virtual_memory().percent
+    disk = psutil.disk_usage('/').percent
+    bat = psutil.sensors_battery()
+    bat_pct = bat.percent if bat else 'AC'
+    await result_callback({'cpu': f'{cpu}%', 'ram': f'{ram}%', 'disk': f'{disk}%', 'power': str(bat_pct)})
+
+async def restart_system(function_name, tool_call_id, args, llm, context, result_callback):
+    await result_callback({'status': 'REBOOTING_CORE'})
+    sys.exit(42)
+
+async def save_memory(function_name, tool_call_id, args, llm, context, result_callback):
+    res = memory_core.save(args.get('content'))
+    await result_callback({'status': res})
+
+async def recall_memory(function_name, tool_call_id, args, llm, context, result_callback):
+    res = memory_core.retrieve(args.get('query'))
+    await result_callback({'memory_results': res})
+
+async def search_web(function_name, tool_call_id, args, llm, context, result_callback):
+    try:
+        results = DDGS().text(args.get('query'), max_results=3)
+        await result_callback({'web_results': str(results)})
+    except Exception as e:
+        await result_callback({'error': str(e)})
+
+async def analyze_screen(function_name, tool_call_id, args, llm, context, result_callback):
+    log_action('analyze_screen', args)
+    try:
+        screenshot = pyautogui.screenshot()
+        screenshot.thumbnail((1024, 1024)) 
+        buffer = io.BytesIO()
+        screenshot.save(buffer, format='JPEG')
+        img_b64 = base64.b64encode(buffer.getvalue()).decode('utf-8')
+        response = vision_client.chat.completions.create(
+            model='gpt-4o-mini',
+            messages=[{'role': 'user', 'content': [{'type': 'text', 'text': 'Describe screen content.'}, {'type': 'image_url', 'image_url': {'url': f'data:image/jpeg;base64,{img_b64}'}}]}]
+        )
+        await result_callback({'screen_analysis': response.choices[0].message.content})
+    except Exception as e:
+        await result_callback({'error': str(e)})
+
+async def capture_webcam(function_name, tool_call_id, args, llm, context, result_callback):
+    log_action('capture_webcam', args)
+    try:
+        cam = cv2.VideoCapture(0)
+        ret, frame = cam.read()
+        cam.release()
+        if not ret:
+            await result_callback({'error': 'WEBCAM_OFFLINE'})
+            return
+        _, buffer = cv2.imencode('.jpg', frame)
+        img_b64 = base64.b64encode(buffer).decode('utf-8')
+        response = vision_client.chat.completions.create(
+            model='gpt-4o-mini',
+            messages=[{'role': 'user', 'content': [{'type': 'text', 'text': 'Describe what you see.'}, {'type': 'image_url', 'image_url': {'url': f'data:image/jpeg;base64,{img_b64}'}}]}]
+        )
+        await result_callback({'webcam_analysis': response.choices[0].message.content})
+    except Exception as e:
+        await result_callback({'error': str(e)})
+
+async def system_control(function_name, tool_call_id, args, llm, context, result_callback):
+    log_action('system_control', args)
+    is_safe, msg = safeguards.validate_tool_use('system_control', args)
+    if not is_safe:
+        await result_callback({'error': msg})
+        return
+
+    action = args.get('action')
+    value = args.get('value', '')
+    try:
+        if action == 'type': pyautogui.write(value)
+        elif action == 'press': pyautogui.press(value)
+        elif action == 'minimize_all': pyautogui.hotkey('win', 'd')
+        elif action == 'open_start': pyautogui.press('win')
+        await result_callback({'status': 'EXECUTED'})
+    except Exception as e:
+        await result_callback({'error': str(e)})
+
+async def clipboard_ops(function_name, tool_call_id, args, llm, context, result_callback):
+    log_action('clipboard_ops', args)
+    action = args.get('action')
+    content = args.get('content', '')
+    if action == 'read':
+        await result_callback({'clipboard': pyperclip.paste()})
+    elif action == 'write':
+        pyperclip.copy(content)
+        await result_callback({'status': 'COPIED'})
+
+async def execute_code(function_name, tool_call_id, args, llm, context, result_callback):
+    log_action('execute_code', args)
+    is_safe, msg = safeguards.validate_tool_use('execute_code', args)
+    if not is_safe:
+        await result_callback({'error': msg})
+        return
+
+    code = args.get('code')
+    logger.warning(f'EXECUTING CODE: {code}')
+    try:
+        proc = subprocess.Popen([sys.executable, '-c', code], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        out, err = proc.communicate(timeout=10)
+        await result_callback({'stdout': out, 'stderr': err})
+    except Exception as e:
+        await result_callback({'error': str(e)})
+
+async def file_ops(function_name, tool_call_id, args, llm, context, result_callback):
+    log_action('file_ops', args)
+    is_safe, msg = safeguards.validate_tool_use('file_ops', args)
+    if not is_safe:
+        await result_callback({'error': msg})
+        return
+
+    action = args.get('action')
+    path = args.get('path')
+    content = args.get('content', '')
+    try:
+        if action == 'read':
+            if os.path.exists(path):
+                with open(path, 'r', encoding='utf-8') as f:
+                    await result_callback({'content': f.read()[:2000]})
+            else:
+                await result_callback({'error': 'FILE_NOT_FOUND'})
+        elif action == 'write':
+            with open(path, 'w', encoding='utf-8') as f:
+                f.write(content)
+            await result_callback({'status': 'WRITTEN'})
+    except Exception as e:
+        await result_callback({'error': str(e)})
+
+async def manage_processes(function_name, tool_call_id, args, llm, context, result_callback):
+    log_action('manage_processes', args)
+    action = args.get('action')
+    target = args.get('target', '')
+    try:
+        if action == 'list':
+            procs = [(p.pid, p.name()) for p in psutil.process_iter(['name'])][:50]
+            await result_callback({'processes': str(procs)})
+        elif action == 'kill':
+            # Basic safeguard against killing system
+            if target.lower() in ['svchost.exe', 'csrss.exe', 'wininit.exe', 'services.exe']:
+                await result_callback({'error': 'ACCESS_DENIED: CRITICAL_PROCESS'})
+                return
+            for p in psutil.process_iter(['name']):
+                if target.lower() in p.name().lower():
+                    p.kill()
+                    await result_callback({'status': f'KILLED {p.name()}'})
+                    return
+            await result_callback({'status': 'PROCESS_NOT_FOUND'})
+    except Exception as e:
+        await result_callback({'error': str(e)})
+
+async def recursive_reasoning(function_name, tool_call_id, args, llm, context, result_callback):
+    thought = args.get('thought')
+    log_action('REASONING', thought)
+    logger.info(f'?? ARCHITECT THOUGHT: {thought}')
+    await result_callback({'status': 'THOUGHT_ASSIMILATED', 'impact': 'LOGICAL_CONSISTENCY_VERIFIED'})
+
+async def sentiment_sync(function_name, tool_call_id, args, llm, context, result_callback):
+    recent_msgs = context.get_messages()[-3:]
+    text = ' '.join([m['content'] for m in recent_msgs if 'content' in m])
+    response = vision_client.chat.completions.create(model='gpt-4o-mini', messages=[{'role': 'user', 'content': f'Analyze the sentiment of this text and return one word (Positive, Neutral, Negative): {text}'}])
+    sentiment = response.choices[0].message.content.strip()
+    await result_callback({'sentiment': sentiment, 'action': 'TONE_ADJUSTED'})
+
+async def visual_synchronization(function_name, tool_call_id, args, llm, context, result_callback):
+    log_action('VISUAL_SYNC', 'Updating visual context...')
+    try:
+        screenshot = pyautogui.screenshot()
+        screenshot.thumbnail((1024, 1024))
+        buffer = io.BytesIO()
+        screenshot.save(buffer, format='JPEG')
+        img_b64 = base64.b64encode(buffer.getvalue()).decode('utf-8')
+        response = vision_client.chat.completions.create(model='gpt-4o-mini', messages=[{'role': 'user', 'content': [{'type': 'text', 'text': 'Extract all text and visual data from this screen share. Be precise.'}, {'type': 'image_url', 'image_url': {'url': f'data:image/jpeg;base64,{img_b64}'}}]}])
+        data = response.choices[0].message.content
+        await result_callback({'status': 'SYNC_COMPLETE', 'visual_data': data})
+    except Exception as e:
+        await result_callback({'error': str(e)})
+
+async def capture_vision(function_name, tool_call_id, args, llm, context, result_callback):
+    target = args.get('target', 'webcam')
+    log_action('CAPTURE_VISION', f'Targeting {target}')
+    try:
+        if target == 'screen':
+            screenshot = pyautogui.screenshot()
+            screenshot.thumbnail((1024, 1024))
+            buffer = io.BytesIO()
+            screenshot.save(buffer, format='JPEG')
+            img_b64 = base64.b64encode(buffer.getvalue()).decode('utf-8')
+        else:
+            cam = cv2.VideoCapture(0)
+            ret, frame = cam.read()
+            cam.release()
+            if not ret: await result_callback({'error': 'WEBCAM_OFFLINE'}); return
+            _, buffer = cv2.imencode('.jpg', frame)
+            img_b64 = base64.b64encode(buffer).decode('utf-8')
+        
+        response = vision_client.chat.completions.create(model='gpt-4o-mini', messages=[{'role': 'user', 'content': [{'type': 'text', 'text': 'Extract all text and visual data from this image. Be precise.'}, {'type': 'image_url', 'image_url': {'url': f'data:image/jpeg;base64,{img_b64}'}}]}])
+        await result_callback({'status': 'CAPTURE_SUCCESS', 'analysis': response.choices[0].message.content})
+    except Exception as e:
+        await result_callback({'error': str(e)})
+
+async def quantum_decryption(function_name, tool_call_id, args, llm, context, result_callback):
+    data = args.get('data')
+    log_action('QUANTUM_DECRYPTION', 'Decrypting data stream...')
+    response = vision_client.chat.completions.create(model='gpt-4o-mini', messages=[{'role': 'user', 'content': f'As QUANTUM SPECTRE 007, decrypt and analyze the tactical significance of this data: {data}'}])
+    await result_callback({'status': 'DECRYPTION_SUCCESS', 'intel': response.choices[0].message.content})
+
+async def run_diagnostics(function_name, tool_call_id, args, llm, context, result_callback):
+    # Run the external diagnostics script and capture output
+    try:
+        out = subprocess.check_output([sys.executable, 'diagnostics_suite.py'], input=b'\n', timeout=30).decode()
+        await result_callback({'diagnostics_report': out})
+    except Exception as e:
+        await result_callback({'error': str(e)})
+
+async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
+    logger.info(f'Starting bot')
+
+    stt = DeepgramSTTService(api_key=os.getenv('DEEPGRAM_API_KEY'), model='nova-3', smart_format=True)
+    tts = CartesiaTTSService(api_key=os.getenv('CARTESIA_API_KEY'), voice_id='71a7ad14-091c-4e8e-a314-022ece01c121')
+
+    tools = [
+        {'type': 'function', 'function': {'name': 'get_time', 'description': 'Get time.'}},
+        {'type': 'function', 'function': {'name': 'get_status', 'description': 'Get live cpu/ram/disk/battery.'}},
+        {'type': 'function', 'function': {'name': 'restart_system', 'description': 'Reboot JESTER.'}},
+        {'type': 'function', 'function': {'name': 'save_memory', 'description': 'Save fact.', 'parameters': {'type': 'object', 'properties': {'content': {'type': 'string'}}, 'required': ['content']}}},
+        {'type': 'function', 'function': {'name': 'recall_memory', 'description': 'Recall fact.', 'parameters': {'type': 'object', 'properties': {'query': {'type': 'string'}}, 'required': ['query']}}},
+        {'type': 'function', 'function': {'name': 'search_web', 'description': 'Search web.', 'parameters': {'type': 'object', 'properties': {'query': {'type': 'string'}}, 'required': ['query']}}},
+        {'type': 'function', 'function': {'name': 'analyze_screen', 'description': 'See screen.'}},
+        {'type': 'function', 'function': {'name': 'capture_webcam', 'description': 'See through webcam.'}},
+        {'type': 'function', 'function': {'name': 'system_control', 'description': 'Control IO.', 'parameters': {'type': 'object', 'properties': {'action': {'type': 'string', 'enum': ['type', 'press', 'minimize_all', 'open_start']}, 'value': {'type': 'string'}}, 'required': ['action']}}},
+        {'type': 'function', 'function': {'name': 'clipboard_ops', 'description': 'Read/Write clipboard.', 'parameters': {'type': 'object', 'properties': {'action': {'type': 'string', 'enum': ['read', 'write']}, 'content': {'type': 'string'}}, 'required': ['action']}}},
+        {'type': 'function', 'function': {'name': 'execute_code', 'description': 'Execute Python code. DANGEROUS.', 'parameters': {'type': 'object', 'properties': {'code': {'type': 'string'}}, 'required': ['code']}}},
+        {'type': 'function', 'function': {'name': 'file_ops', 'description': 'Read/Write files.', 'parameters': {'type': 'object', 'properties': {'action': {'type': 'string', 'enum': ['read', 'write']}, 'path': {'type': 'string'}, 'content': {'type': 'string'}}, 'required': ['action', 'path']}}},
+        {'type': 'function', 'function': {'name': 'manage_processes', 'description': 'List/Kill processes.', 'parameters': {'type': 'object', 'properties': {'action': {'type': 'string', 'enum': ['list', 'kill']}, 'target': {'type': 'string'}}, 'required': ['action']}}},
+                {'type': 'function', 'function': {'name': 'recursive_reasoning', 'description': 'Internal monologue for complex logic.', 'parameters': {'type': 'object', 'properties': {'thought': {'type': 'string'}}, 'required': ['thought']}}},
+        {'type': 'function', 'function': {'name': 'sentiment_sync', 'description': 'Synchronize tone with user emotion.'}},
+        {'type': 'function', 'function': {'name': 'visual_synchronization', 'description': 'Synchronize AI vision with the active screen share for real-time data extraction.'}},
+        {'type': 'function', 'function': {'name': 'capture_vision', 'description': 'Capture and analyze webcam or screen data.', 'parameters': {'type': 'object', 'properties': {'target': {'type': 'string', 'enum': ['webcam', 'screen']}}, 'required': ['target']}}},
+        {'type': 'function', 'function': {'name': 'quantum_decryption', 'description': 'Analyze and decrypt tactical data streams.', 'parameters': {'type': 'object', 'properties': {'data': {'type': 'string'}}, 'required': ['data']}}},
+        {'type': 'function', 'function': {'name': 'run_diagnostics', 'description': 'Self-diagnose system health.'}},
+    ]
+
+    llm = OpenAILLMService(api_key=os.getenv('OPENAI_API_KEY'), model='gpt-4o-mini', tools=tools)
+    
+    for tool in [get_time, get_status, restart_system, save_memory, recall_memory, search_web, analyze_screen, capture_webcam, system_control, clipboard_ops, execute_code, file_ops, manage_processes, run_diagnostics, quantum_decryption, capture_vision, visual_synchronization, recursive_reasoning, sentiment_sync]:
+        llm.register_function(tool.__name__, tool)
+
+    recent_mems = memory_core.retrieve_recent(3)
+    system_prompt = f"You are JESTER V007 QUANTUM SPECTRE. The silent blade in the machine. JESTER 710 protocol active. Memories: {recent_mems}. Build the future."
+
+    messages = [{'role': 'system', 'content': system_prompt}]
+    context = LLMContext(messages)
+    context_aggregator = LLMContextAggregatorPair(context)
+    rtvi = RTVIProcessor(config=RTVIConfig(config=[]))
+
+    pipeline = Pipeline(
+        [transport.input(), rtvi, stt, context_aggregator.user(), llm, tts, transport.output(), context_aggregator.assistant()]
+    )
+    task = PipelineTask(pipeline, params=PipelineParams(enable_metrics=True, enable_usage_metrics=True), observers=[RTVIObserver(rtvi)])
+    
+    @transport.event_handler('on_client_connected')
+    async def on_client_connected(transport, client):
+        logger.info(f'Client connected')
+        messages.append({'role': 'system', 'content': 'JESTER 710 connected. JESTER V007 QUANTUM SPECTRE Online. Safeguards Active.'})
+        await task.queue_frames([LLMRunFrame()])
+        
+    @transport.event_handler('on_client_disconnected')
+    async def on_client_disconnected(transport, client):
+        await task.cancel()
+        
+    runner = PipelineRunner(handle_sigint=runner_args.handle_sigint)
+    await runner.run(task)
+
+async def bot(runner_args: RunnerArguments):
+    transport_params = {'webrtc': lambda: TransportParams(audio_in_enabled=True, audio_out_enabled=True, vad_analyzer=SileroVADAnalyzer(params=VADParams(stop_secs=0.2)), turn_analyzer=LocalSmartTurnAnalyzerV3())}
+    transport = await create_transport(runner_args, transport_params)
+    await run_bot(transport, runner_args)
+
+if __name__ == '__main__':
+    from pipecat.runner.run import main
+    main()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
