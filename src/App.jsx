@@ -1,4 +1,4 @@
-﻿import React, { useState, useEffect, useRef, Suspense } from 'react';
+import React, { useState, useEffect, useRef, Suspense } from 'react';
 import { Canvas } from '@react-three/fiber';
 import { PerspectiveCamera, Stars } from '@react-three/drei';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -83,17 +83,46 @@ function App() {
   const handleSend = async (msg) => {
     if (!msg || !msg.trim()) return;
     setStatus('CALCULATING...');
+    setResponse('');
     try {
-      const res = await fetch('/api/chat', { 
+      const res = await fetch('/api/chat_stream', { 
         method: 'POST', 
         headers: { 'Content-Type': 'application/json' }, 
         body: JSON.stringify({ message: msg }) 
       });
-      const data = await res.json();
-      setResponse(data.response);
-      speak(data.response);
-      fetchHistory();
-      setStatus('THE_ONE_ONLINE');
+      
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder("utf-8");
+      let fullResponse = '';
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        
+        const chunk = decoder.decode(value, { stream: true });
+        const lines = chunk.split('\n');
+        
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            const dataStr = line.replace('data: ', '').trim();
+            if (dataStr === '[DONE]') {
+               speak(fullResponse);
+               fetchHistory();
+               setStatus('THE_ONE_ONLINE');
+               break;
+            }
+            try {
+              const data = JSON.parse(dataStr);
+              if (data.chunk) {
+                fullResponse += data.chunk;
+                setResponse(fullResponse);
+              } else if (data.error) {
+                setResponse(prev => prev + '\n[ERROR: ' + data.error + ']');
+              }
+            } catch (err) {}
+          }
+        }
+      }
     } catch (e) {
       setStatus('CORE_ERROR');
       setResponse('ERROR: SYSTEM FAILURE.');

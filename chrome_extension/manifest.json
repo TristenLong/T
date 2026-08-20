@@ -1,0 +1,16 @@
+{
+  "manifest_version": 3,
+  "name": "JESTER Deep Research Companion",
+  "version": "1.0",
+  "description": "Allows JESTER to analyze and extract information from the active browser tab.",
+  "permissions": [
+    "activeTab",
+    "scripting"
+  ],
+  "action": {
+    "default_popup": "popup.html"
+  },
+  "background": {
+    "service_worker": "background.js"
+  }
+}
