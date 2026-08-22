@@ -8,7 +8,7 @@ import MatrixRain from './MatrixRain';
 import SelfAwarenessTest from './components/SelfAwarenessTest';
 
 function App() {
-  const [bootSequence, setBootSequence] = useState(true);
+  const [bootSequence, setBootSequence] = useState(false);
   const [isListening, setIsListening] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [transcript, setTranscript] = useState('');
@@ -188,7 +188,7 @@ function App() {
       <div style={{ position: 'relative', zIndex: 10, height: '100%', display: 'flex', flexDirection: 'column', pointerEvents: 'none' }}>
         <header style={{ padding: '15px 30px', display: 'flex', justifyContent: 'space-between', background: 'rgba(0,10,0,0.85)', borderBottom: '1px solid ' + theme.sec }}>
           <div>
-            <h1 style={{ margin: 0, fontSize: '1.2rem', letterSpacing: '8px', color: theme.main }}>JESTER_V1000: THE GOD HAND</h1>
+            <h1 style={{ margin: 0, fontSize: '1.2rem', letterSpacing: '8px', color: theme.main }}>JESTER_V084: MATRIX RESURRECTIONS</h1>
             <div style={{ fontSize: '0.65rem', opacity: 0.8, color: theme.sec }}>MODEL: {vitals.model} | STATUS: {status}</div>
           </div>
           <div style={{ display: 'flex', gap: '20px', fontSize: '0.85rem', alignItems: 'center', pointerEvents: 'auto' }}>

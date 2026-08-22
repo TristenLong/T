@@ -33,7 +33,6 @@ const JesterBrain = ({ isSpeaking, isListening, isAnomaly }) => {
 
   return (
     <group>
-      <ambientLight intensity={0.2} />
       <pointLight position={[10, 10, 10]} intensity={1.5} color='#00FF41' />
       <pointLight position={[-10, -10, -10]} intensity={0.5} color='#008F11' />
       
