@@ -75,11 +75,20 @@ function createWindow() {
         const isDev = process.argv.includes('--dev');
         if (isDev) {
             console.log(`[ELECTRON] Loading dev server: ${startUrl}`);
-            mainWindow.loadURL(startUrl);
+            const loadWithRetry = () => {
+                mainWindow.loadURL(startUrl).catch((err) => {
+                    console.log(`[ELECTRON] Connection failed, retrying in 1s... (${err.message})`);
+                    setTimeout(loadWithRetry, 1000);
+                });
+            };
+            loadWithRetry();
         } else {
             console.log(`[ELECTRON] Loading local file: dist/index.html`);
             mainWindow.loadFile(path.join(__dirname, 'dist', 'index.html'));
         }
+
+        // Always open DevTools while debugging the black screen
+        mainWindow.webContents.openDevTools({ mode: 'detach' });
 
         mainWindow.webContents.on('console-message', (event, level, message, line, sourceId) => { 
             console.log(`[CLIENT-LOG] ${message}`); 

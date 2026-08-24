@@ -26,7 +26,7 @@ try:
 except ImportError as e:
     print(f"Error importing core modules: {e}")
 
-def execute_computer_use(action: str, params: dict = None) -> str:
+def execute_computer_use(action: str, params: dict | None = None) -> str:
     """Direct OS GUI control, keystrokes & mouse navigation."""
     try:
         return computer_use.execute_computer_action(action, params or {})

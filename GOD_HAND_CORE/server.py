@@ -468,16 +468,15 @@ def chat():
         use_openai_first = requires_coding and openai_client
 
         if use_openai_first:
-             logger.info("ROUTING: CODE INTENT DETECTED -> GPT-4o")
-             try:
-                 reply = generate_openai_response(history + [{'role': 'user', 'parts': [{'text': msg}]}], sys_prompt)
-                 used_model = OPENAI_MODEL
-             except Exception as e:
-                 logger.warning("OPENAI FAILED, FALLBACK TO GEMINI")
-                 if gemini_client:
-                     reply = generate_gemini_response(sys_prompt, history, msg)
-                     used_model = PRIMARY_MODEL
-                 else:
+             logger.info("ROUTING: CODE INTENT DETECTED -> GPT-4o (NO TOOLS SUPPORTED, FALLBACK TO GEMINI)")
+             if gemini_client:
+                 reply = generate_gemini_response(sys_prompt, history, msg)
+                 used_model = PRIMARY_MODEL
+             else:
+                 try:
+                     reply = generate_openai_response(history + [{'role': 'user', 'parts': [{'text': msg}]}], sys_prompt)
+                     used_model = OPENAI_MODEL
+                 except Exception as e:
                      raise e
         else:
              logger.info("ROUTING: CHAT INTENT DETECTED -> GEMINI")
@@ -594,17 +593,20 @@ def chat_stream():
             stream_success = False
             
             if use_openai_first:
-                logger.info("STREAM ROUTING -> GPT-4o")
-                model_used = OPENAI_MODEL
-                try:
-                    for chunk in generate_openai_stream(history + [{'role': 'user', 'parts': [{'text': msg}]}], sys_prompt):
-                        if "[ERROR:" in chunk:
-                            raise RuntimeError(chunk)
-                        full_reply += chunk
-                        yield f"data: {json.dumps({'chunk': chunk, 'model': model_used})}\n\n"
-                    stream_success = True
-                except Exception as e:
-                    logger.warning(f"OpenAI streaming encountered error ({e}). Falling back seamlessly to Gemini...")
+                logger.info("STREAM ROUTING: CODE INTENT DETECTED -> GPT-4o (NO TOOLS SUPPORTED, FALLBACK TO GEMINI)")
+                if gemini_client:
+                    # Let it fall through to Gemini since we want tool support
+                    pass
+                else:
+                    try:
+                        for chunk in generate_openai_stream(history + [{'role': 'user', 'parts': [{'text': msg}]}], sys_prompt):
+                            if "[ERROR:" in chunk:
+                                raise RuntimeError(chunk)
+                            full_reply += chunk
+                            yield f"data: {json.dumps({'chunk': chunk, 'model': model_used})}\n\n"
+                        stream_success = True
+                    except Exception as e:
+                        logger.warning(f"OpenAI streaming encountered error ({e}).")
 
             if not stream_success:
                 logger.info(f"STREAM ROUTING -> GEMINI ({PRIMARY_MODEL})")

@@ -21,6 +21,7 @@ def main():
     print("[SYSTEM] Starting Vite Dev Server...")
     
     # Start Vite and Electron processes
+    server_process = subprocess.Popen([python_exe, os.path.join(base_dir, "GOD_HAND_CORE", "server.py")])
     vite_process = subprocess.Popen(["npx", "vite"], shell=True)
     
     print("[SYSTEM] Waiting for Vite...")
@@ -33,9 +34,11 @@ def main():
     # Clean up
     print("[SYSTEM] Shutting down...")
     try:
+        server_process.terminate()
         subprocess.run(["taskkill", "/f", "/im", "node.exe"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except Exception:
         vite_process.terminate()
+        server_process.terminate()
     input("Press Enter to exit...")
 
 if __name__ == "__main__":
