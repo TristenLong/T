@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 import socket
 import sqlite3
 import time
@@ -13,6 +14,7 @@ os.environ["GRPC_VERBOSITY"] = "ERROR"
 import asyncio
 import json
 import random
+import threading
 import typing
 import queue
 from datetime import datetime
@@ -28,7 +30,13 @@ from openai import OpenAI
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
-from llm_router import generate_completion
+from llm_router import (
+    DEFAULT_OLLAMA_MODEL as OLLAMA_MODEL,
+    generate_completion_with_model,
+    is_available as llm_router_available,
+    is_ollama_available as llm_router_ollama_available,
+    stream_completion,
+)
 from mcp_client_core import run_mcp_tool
 from sandbox_core import sandbox_core
 from vision_core import vision_core
@@ -37,10 +45,54 @@ from vision_core import vision_core
 semantic_cache: typing.Dict[str, typing.Any] = {
     'vectorizer': None,
     'tfidf_docs': None,
-    'docs': []
+    'docs': [],
+    # Set by save_memory; consumed by semantic_search_memory so the expensive
+    # TF-IDF refit happens once per search rather than once per saved message.
+    'dirty': False
 }
 
-global_event_queue = queue.Queue()
+class EventBroadcaster:
+    """Fan-out for server-sent events.
+
+    This was a single shared queue.Queue that every /api/stream_events client
+    called get() on. queue.get() *removes* the item, so with more than one
+    listener (the Electron HUD plus the browser extension, say) each event went
+    to exactly one of them at random instead of all of them. Subscribers now get
+    their own bounded queue and publishers write to every queue.
+    """
+
+    def __init__(self, maxsize=256):
+        self._maxsize = maxsize
+        self._subscribers: typing.Set[queue.Queue] = set()
+        self._lock = threading.Lock()
+
+    def subscribe(self):
+        q: queue.Queue = queue.Queue(maxsize=self._maxsize)
+        with self._lock:
+            self._subscribers.add(q)
+        return q
+
+    def unsubscribe(self, q):
+        with self._lock:
+            self._subscribers.discard(q)
+
+    def put(self, message):
+        with self._lock:
+            targets = list(self._subscribers)
+        for q in targets:
+            try:
+                q.put_nowait(message)
+            except queue.Full:
+                # A stalled client must not block the request that emitted the
+                # event, and must not grow without bound. Drop its oldest item.
+                try:
+                    q.get_nowait()
+                    q.put_nowait(message)
+                except (queue.Empty, queue.Full):
+                    pass
+
+
+global_event_queue = EventBroadcaster()
 
 
 # Configuration
@@ -67,7 +119,18 @@ DB_FILE = os.path.join(BASE_DIR, 'jester_V73_OMNIPRESENCE.db')
 load_dotenv(os.path.join(ROOT_DIR, '.env'), override=True)
 
 app = Flask(__name__)
-CORS(app)
+
+# CORS was previously `CORS(app)`, which allows EVERY origin. Combined with the
+# unauthenticated /api/sandbox and /api/execute_tool endpoints below, that let
+# any website the user happened to visit execute arbitrary code on this machine
+# via a cross-origin fetch to localhost. Restrict to the local dev server and
+# the browser extension, which are the only legitimate cross-origin callers.
+# (The React app reaches Flask through Vite's server-side proxy, which sends no
+# browser Origin, so it is unaffected by this list.)
+CORS(app, origins=[
+    re.compile(r"^http://(localhost|127\.0\.0\.1)(:\d+)?$"),
+    re.compile(r"^chrome-extension://[a-p]+$"),
+])
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger('SOURCE_CORE')
@@ -113,6 +176,22 @@ if OPENAI_API_KEY:
     except Exception as e:
         logger.error(f'OPENAI INIT FAILED: {str(e)}')
 
+
+def active_model_name():
+    """Best guess at the model that would answer the next turn.
+
+    Status endpoints used to report `PRIMARY_MODEL if gemini_client else
+    OPENAI_MODEL`, which showed "gpt-4o" on an Ollama-only install that never
+    touches OpenAI. The Ollama probe is cached, so this is cheap to call.
+    """
+    if gemini_client:
+        return PRIMARY_MODEL
+    if llm_router_ollama_available():
+        return OLLAMA_MODEL
+    if openai_client:
+        return OPENAI_MODEL
+    return 'OFFLINE'
+
 # --- Memory Modules ---
 try:
     import chromadb
@@ -128,7 +207,14 @@ def init_db():
     try:
         conn = sqlite3.connect(DB_FILE)
         c = conn.cursor()
+        # WAL lets the SSE thread and request handlers read while a write is in
+        # flight; the default rollback journal serialises them and produced
+        # "database is locked" errors under concurrent chats.
+        c.execute('PRAGMA journal_mode=WAL')
         c.execute('CREATE TABLE IF NOT EXISTS history (id INTEGER PRIMARY KEY AUTOINCREMENT, role TEXT, content TEXT, pinned INTEGER DEFAULT 0, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP)')
+        # Every query in this module filters or orders by role/id; without this
+        # the semantic-cache refresh scans the whole table.
+        c.execute('CREATE INDEX IF NOT EXISTS idx_history_role_id ON history (role, id DESC)')
         conn.commit()
         conn.close()
     except Exception as e:
@@ -139,7 +225,7 @@ def save_memory(role, content):
         # 1. Try Neo4j Graph Memory first
         if graph_memory.save_memory(role, content):
             pass # successfully saved to graph
-            
+
         # 2. Always save to SQLite for backup
         conn = sqlite3.connect(DB_FILE)
         c = conn.cursor()
@@ -147,7 +233,7 @@ def save_memory(role, content):
         record_id = c.lastrowid
         conn.commit()
         conn.close()
-        
+
         # Save to Chroma
         if CHROMA_ENABLED and role == 'user':
             jester_collection.add(
@@ -156,7 +242,10 @@ def save_memory(role, content):
                 ids=[str(record_id)]
             )
         elif not CHROMA_ENABLED:
-            refresh_semantic_cache()
+            # Only flag the cache stale. This used to refit TF-IDF over 500
+            # documents on *every* save -- twice per chat turn -- even though
+            # nothing read the result until the next search.
+            semantic_cache['dirty'] = True
     except Exception as e:
         logger.error(f'SAVE_MEMORY ERROR: {e}')
 
@@ -168,18 +257,25 @@ def refresh_semantic_cache():
         c.execute('SELECT content FROM history WHERE role="user" ORDER BY id DESC LIMIT 500')
         rows = c.fetchall()
         conn.close()
-        
-        if not rows: return
-            
+
+        semantic_cache['dirty'] = False
+        if not rows:
+            semantic_cache['docs'] = []
+            semantic_cache['vectorizer'] = None
+            semantic_cache['tfidf_docs'] = None
+            return
+
         docs = [r[0] for r in rows]
-        vectorizer = TfidfVectorizer().fit(docs)
-        tfidf_docs = vectorizer.transform(docs)
-        
+        vectorizer = TfidfVectorizer()
+        # fit_transform does one pass instead of fit-then-transform's two.
+        tfidf_docs = vectorizer.fit_transform(docs)
+
         semantic_cache['vectorizer'] = vectorizer
         semantic_cache['tfidf_docs'] = tfidf_docs
         semantic_cache['docs'] = docs
     except Exception as e:
-        pass
+        # Was a bare `pass`, which hid schema and sklearn errors entirely.
+        logger.warning(f'SEMANTIC CACHE REFRESH FAILED: {e}')
 
 def load_memories(limit=10):
     try:
@@ -219,7 +315,9 @@ def semantic_search_memory(query, top_k=3):
                     return "RECALLED PAST CONTEXT: " + " | ".join(relevant)
             return ""
         else:
-            # TF-IDF Fallback
+            # TF-IDF Fallback -- rebuild here (lazily) if saves marked it stale.
+            if semantic_cache.get('dirty'):
+                refresh_semantic_cache()
             docs = semantic_cache['docs']
             if not docs or not semantic_cache['vectorizer']:
                 return ""
@@ -241,17 +339,30 @@ if not CHROMA_ENABLED:
     refresh_semantic_cache()
 
 
-def generate_openai_response(messages, sys_prompt, max_retries=3):
-    msgs = [{'role': 'system', 'content': sys_prompt}]
+def _to_router_messages(messages, sys_prompt):
+    """Flatten Gemini-shaped history into the router's OpenAI-style messages."""
+    msgs = [{'role': 'system', 'content': str(sys_prompt)}]
     for m in messages:
         role = 'user' if m['role'] == 'user' else 'assistant'
-        msgs.append({'role': role, 'content': m['parts'][0]['text']})
-        
+        parts = m.get('parts') or [{}]
+        msgs.append({'role': role, 'content': str(parts[0].get('text', ''))})
+    return msgs
+
+
+def generate_fallback_response(messages, sys_prompt, max_retries=3):
+    """Non-Gemini completion via the LLM router. Returns (text, model_name).
+
+    Named for what it is rather than "openai": the router prefers a local Ollama
+    daemon and only reaches for OpenAI when that is unavailable. The old version
+    asserted `openai_client is not None` here, which made an Ollama-only install
+    fail three times with backoff before raising -- even though the router it
+    then called would have served the request locally without a key.
+    """
+    msgs = _to_router_messages(messages, sys_prompt)
+
     for attempt in range(max_retries):
         try:
-            assert openai_client is not None
-            # Route through the local LLM router (Ollama -> OpenAI fallback)
-            return generate_completion(msgs)
+            return generate_completion_with_model(msgs)
         except Exception as e:
             if attempt < max_retries - 1:
                 wait_time = (2 ** attempt) + random.uniform(0, 1)
@@ -259,7 +370,7 @@ def generate_openai_response(messages, sys_prompt, max_retries=3):
                 time.sleep(wait_time)
             else:
                 logger.error(f'OLLAMA/OPENAI ERROR: {e}')
-                raise e
+                raise
 
 def generate_gemini_response(sys_prompt, history, msg, max_retries=3):
     for attempt in range(max_retries):
@@ -462,16 +573,20 @@ def chat():
 
         # Multi-LLM Routing Logic
         # Only the Gemini path passes server_tools.AVAILABLE_TOOLS, so Gemini is
-        # preferred whenever it is available -- regardless of intent. OpenAI is a
-        # tool-less fallback used when Gemini is absent or fails.
+        # preferred whenever it is available -- regardless of intent. The router
+        # (Ollama -> OpenAI) is a tool-less fallback used when Gemini is absent
+        # or fails.
         coding_keywords = ['code', 'script', 'function', 'python', 'javascript', 'jsx', 'bug', 'fix']
         requires_coding = any(k in msg.lower() for k in coding_keywords)
         intent = 'CODE' if requires_coding else 'CHAT'
 
-        if not gemini_client and not openai_client:
+        # `openai_client` alone is the wrong availability test: the router serves
+        # requests from a local Ollama daemon with no API key at all.
+        fallback_available = llm_router_available()
+        if not gemini_client and not fallback_available:
             return jsonify({'error': 'NO_LLM_AVAILABLE'}), 500
 
-        openai_payload = history + [{'role': 'user', 'parts': [{'text': msg}]}]
+        fallback_payload = history + [{'role': 'user', 'parts': [{'text': msg}]}]
 
         if gemini_client:
             logger.info(f'ROUTING: {intent} INTENT -> GEMINI ({PRIMARY_MODEL}, TOOLS ENABLED)')
@@ -479,15 +594,13 @@ def chat():
                 reply = generate_gemini_response(sys_prompt, history, msg)
                 used_model = PRIMARY_MODEL
             except Exception as e:
-                if not openai_client:
+                if not fallback_available:
                     raise
-                logger.warning(f'GEMINI FAILED ({e}), FALLBACK TO OPENAI (NO TOOL SUPPORT)')
-                reply = generate_openai_response(openai_payload, sys_prompt)
-                used_model = OPENAI_MODEL
+                logger.warning(f'GEMINI FAILED ({e}), FALLBACK TO ROUTER (NO TOOL SUPPORT)')
+                reply, used_model = generate_fallback_response(fallback_payload, sys_prompt)
         else:
-            logger.info(f'ROUTING: {intent} INTENT -> OPENAI ({OPENAI_MODEL}, NO TOOL SUPPORT)')
-            reply = generate_openai_response(openai_payload, sys_prompt)
-            used_model = OPENAI_MODEL
+            logger.info(f'ROUTING: {intent} INTENT -> LLM ROUTER (NO TOOL SUPPORT)')
+            reply, used_model = generate_fallback_response(fallback_payload, sys_prompt)
 
         save_memory('user', msg)
         save_memory('model', reply)
@@ -497,32 +610,34 @@ def chat():
         logger.error(f'CHAT_ERROR: {str(e)}')
         return jsonify({'error': str(e)}), 500
 
-def generate_openai_stream(messages, sys_prompt, max_retries=3):
-    msgs: list = [{'role': 'system', 'content': str(sys_prompt)}]
-    for m in messages:
-        role = 'user' if m['role'] == 'user' else 'assistant'
-        msgs.append({'role': role, 'content': str(m['parts'][0]['text'])})
-        
+def generate_fallback_stream(messages, sys_prompt, max_retries=3):
+    """Yields (chunk, model_name) from the LLM router (Ollama -> OpenAI).
+
+    Streaming used to call openai_client directly, bypassing the router, so an
+    Ollama-only install could chat but never stream. It also retried after a
+    partially consumed stream, which re-emitted every chunk already sent; the
+    `emitted` guard below makes a failure mid-stream terminal instead.
+    """
+    msgs = _to_router_messages(messages, sys_prompt)
+
     for attempt in range(max_retries):
+        emitted = False
         try:
-            assert openai_client is not None
-            response = openai_client.chat.completions.create(
-                model=OPENAI_MODEL,
-                messages=msgs,
-                stream=True
-            )
-            for chunk in response:
-                if chunk.choices[0].delta.content:
-                    yield chunk.choices[0].delta.content
+            for chunk, model_name in stream_completion(msgs):
+                emitted = True
+                yield chunk, model_name
             return
         except Exception as e:
+            if emitted:
+                logger.error(f'FALLBACK STREAM FAILED MID-STREAM, NOT RETRYING: {e}')
+                raise
             if attempt < max_retries - 1:
                 wait_time = (2 ** attempt) + random.uniform(0, 1)
-                logger.warning(f"OPENAI STREAM RATE LIMIT/ERROR (Attempt {attempt+1}): {e}. Retrying in {wait_time:.2f}s...")
+                logger.warning(f"FALLBACK STREAM RATE LIMIT/ERROR (Attempt {attempt+1}): {e}. Retrying in {wait_time:.2f}s...")
                 time.sleep(wait_time)
             else:
-                logger.error(f'OPENAI STREAM ERROR: {e}')
-                yield f"[ERROR: {str(e)}]"
+                logger.error(f'FALLBACK STREAM ERROR: {e}')
+                raise
 
 def generate_gemini_stream(sys_prompt, history, msg, max_retries=3):
     import server_tools
@@ -578,13 +693,17 @@ def chat_stream():
         coding_keywords = ['code', 'script', 'function', 'python', 'javascript', 'jsx', 'bug', 'fix']
         requires_coding = any(k in msg.lower() for k in coding_keywords)
         intent = 'CODE' if requires_coding else 'CHAT'
-        openai_payload = history + [{'role': 'user', 'parts': [{'text': msg}]}]
+        fallback_payload = history + [{'role': 'user', 'parts': [{'text': msg}]}]
+        # Probe once here rather than inside the generator: by the time the
+        # generator runs, the response headers are already sent and a 500 is no
+        # longer possible.
+        fallback_available = llm_router_available()
 
         def event_stream():
             full_reply = ""
             stream_success = False
 
-            if not gemini_client and not openai_client:
+            if not gemini_client and not fallback_available:
                 yield f"data: {json.dumps({'error': 'NO_LLM_AVAILABLE'})}\n\n"
                 yield "data: [DONE]\n\n"
                 return
@@ -607,27 +726,24 @@ def chat_stream():
                 except Exception as e:
                     logger.warning(f'GEMINI STREAM FAILED ({e}).')
 
-            # Fall back to OpenAI only if it actually exists, otherwise
-            # generate_*_stream would retry against a None client and burn the
-            # full backoff before surfacing a misleading error.
-            if not stream_success and openai_client:
+            # Fall back only if a non-Gemini backend actually exists, otherwise
+            # the router would raise on every retry and burn the full backoff
+            # before surfacing a misleading error.
+            if not stream_success and fallback_available:
                 if full_reply:
                     # Discard partial output so the persisted reply is not a
                     # truncated attempt concatenated with the fallback answer.
                     logger.info('DISCARDING PARTIAL GEMINI OUTPUT BEFORE FALLBACK.')
                     full_reply = ""
                     yield f"data: {json.dumps({'reset': True})}\n\n"
-                logger.info(f'STREAM ROUTING -> OPENAI ({OPENAI_MODEL}, NO TOOL SUPPORT)')
-                model_used = OPENAI_MODEL
+                logger.info('STREAM ROUTING -> LLM ROUTER (NO TOOL SUPPORT)')
                 try:
-                    for chunk in generate_openai_stream(openai_payload, sys_prompt):
-                        if "[ERROR:" in chunk:
-                            raise RuntimeError(chunk)
+                    for chunk, model_used in generate_fallback_stream(fallback_payload, sys_prompt):
                         full_reply += chunk
                         yield f"data: {json.dumps({'chunk': chunk, 'model': model_used})}\n\n"
                     stream_success = True
                 except Exception as e:
-                    logger.error(f'OPENAI STREAM FAILED ({e}).')
+                    logger.error(f'FALLBACK STREAM FAILED ({e}).')
 
             if not stream_success:
                 yield f"data: {json.dumps({'error': 'ALL_LLM_STREAMS_FAILED'})}\n\n"
@@ -647,12 +763,18 @@ def chat_stream():
 @app.route('/api/stream_events', methods=['GET'])
 def stream_events():
     def event_stream():
-        while True:
-            try:
-                msg = global_event_queue.get(timeout=10)
-                yield f"data: {json.dumps(msg)}\n\n"
-            except queue.Empty:
-                yield ": keepalive\n\n"
+        q = global_event_queue.subscribe()
+        try:
+            while True:
+                try:
+                    msg = q.get(timeout=10)
+                    yield f"data: {json.dumps(msg)}\n\n"
+                except queue.Empty:
+                    yield ": keepalive\n\n"
+        finally:
+            # Without this, a disconnected client's queue stayed registered and
+            # every subsequent event was copied into a buffer nobody read.
+            global_event_queue.unsubscribe(q)
     return Response(event_stream(), mimetype="text/event-stream")
 
 @app.route('/api/history', methods=['GET'])
@@ -688,7 +810,7 @@ def pulse():
         'cpu': psutil.cpu_percent(),
         'ram': psutil.virtual_memory().percent,
         'status': 'THE_ONE_ONLINE',
-        'model': PRIMARY_MODEL if gemini_client else OPENAI_MODEL,
+        'model': active_model_name(),
         'logic_core': 'ONLINE'
     })
 
@@ -719,8 +841,8 @@ def matrix_status():
         'cpu': cpu_usage,
         'ram': ram_usage,
         'swarm': swarm,
-        'ai_status': 'ONLINE' if (gemini_client or openai_client) else 'OFFLINE_MODE',
-        'model': PRIMARY_MODEL if gemini_client else OPENAI_MODEL,
+        'ai_status': 'ONLINE' if (gemini_client or llm_router_available()) else 'OFFLINE_MODE',
+        'model': active_model_name(),
         'logic_core': 'ONLINE',
         'sync_potential': random.randint(75, 99),
         'gcp_variance': random.choice(['Nominal', 'Slight Anomaly', 'High Variance', 'Non-random spike']),
@@ -819,5 +941,19 @@ def bot_event():
         return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000)
+    # Was host='0.0.0.0', which published every endpoint below -- including the
+    # unauthenticated /api/sandbox (arbitrary Python), /api/execute_tool
+    # (arbitrary subprocesses via mcp_execute) and computer_use (mouse/keyboard
+    # control) -- to every device on the local network. Loopback is the only
+    # binding the app actually needs: Electron, Vite's proxy and the browser
+    # extension all connect from this machine. Override deliberately with
+    # JESTER_BIND_HOST if you understand the exposure.
+    bind_host = os.getenv('JESTER_BIND_HOST', '127.0.0.1')
+    bind_port = int(os.getenv('JESTER_BIND_PORT', '5000'))
+    if bind_host not in ('127.0.0.1', 'localhost', '::1'):
+        logger.warning(
+            f'SERVER BOUND TO {bind_host} -- code-execution endpoints are now '
+            'reachable from the network and there is NO authentication.'
+        )
+    app.run(host=bind_host, port=bind_port)
 
