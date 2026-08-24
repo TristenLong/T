@@ -103,24 +103,32 @@ function App() {
       recognitionRef.current = rec;
     }
 
-    const eventSource = new EventSource('/api/stream_events');
-    eventSource.onmessage = (e) => {
-      try {
-        const data = JSON.parse(e.data);
-        if (data.type === 'new_memory') {
-          fetchHistory();
-        } else if (data.type === 'ui_alert') {
-          setResponse(`[SWARM ALERT] ${data.message}`);
-          setStatus('SWARM_ACTIVE');
+    // Feature-checked like the SpeechRecognition/tts paths above: EventSource is
+    // absent in jsdom (and any non-browser host), where an unguarded constructor
+    // threw out of the effect and took the whole mount down.
+    let eventSource = null;
+    if (typeof EventSource !== 'undefined') {
+      eventSource = new EventSource('/api/stream_events');
+      eventSource.onmessage = (e) => {
+        try {
+          const data = JSON.parse(e.data);
+          if (data.type === 'new_memory') {
+            fetchHistory();
+          } else if (data.type === 'ui_alert') {
+            setResponse(`[SWARM ALERT] ${data.message}`);
+            setStatus('SWARM_ACTIVE');
+          }
+        } catch (err) {
+          console.debug('SSE parse error', err);
         }
-      } catch (err) {
-        console.debug('SSE parse error', err);
-      }
-    };
+      };
+    } else {
+      console.debug('EventSource unavailable; live swarm events disabled.');
+    }
 
     return () => {
       clearInterval(int);
-      eventSource.close();
+      if (eventSource) eventSource.close();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -158,34 +166,49 @@ function App() {
       const reader = res.body.getReader();
       const decoder = new TextDecoder("utf-8");
       let fullResponse = '';
+      let buffer = '';
+      let done = false;
 
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        
-        const chunk = decoder.decode(value, { stream: true });
-        const lines = chunk.split('\n');
-        
+      while (!done) {
+        const { value, done: readerDone } = await reader.read();
+        if (readerDone) break;
+
+        // An SSE frame can straddle a read boundary. Previously each read was
+        // split on '\n' and parsed directly, so a truncated line failed
+        // JSON.parse and was silently swallowed by the catch -- losing text.
+        // Keep the trailing partial line in `buffer` until it completes.
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() ?? '';
+
         for (const line of lines) {
-          if (line.startsWith('data: ')) {
-            const dataStr = line.replace('data: ', '').trim();
-            if (dataStr === '[DONE]') {
-               speak(fullResponse);
-               fetchHistory();
-               setStatus('THE_ONE_ONLINE');
-               break;
+          if (!line.startsWith('data: ')) continue;
+          const dataStr = line.slice(6).trim();
+
+          if (dataStr === '[DONE]') {
+            speak(fullResponse);
+            fetchHistory();
+            setStatus('THE_ONE_ONLINE');
+            done = true;
+            break;
+          }
+
+          try {
+            const data = JSON.parse(dataStr);
+            if (data.reset) {
+              // Server discarded a partial reply and is restarting on a
+              // fallback model; drop what we rendered so the two answers
+              // are not concatenated on screen.
+              fullResponse = '';
+              setResponse('');
+            } else if (data.chunk) {
+              fullResponse += data.chunk;
+              setResponse(fullResponse);
+            } else if (data.error) {
+              setResponse(prev => prev + '\n[ERROR: ' + data.error + ']');
             }
-            try {
-              const data = JSON.parse(dataStr);
-              if (data.chunk) {
-                fullResponse += data.chunk;
-                setResponse(fullResponse);
-              } else if (data.error) {
-                setResponse(prev => prev + '\n[ERROR: ' + data.error + ']');
-              }
-            } catch (err) {
-              console.debug(err);
-            }
+          } catch (err) {
+            console.debug('Malformed SSE frame', dataStr, err);
           }
         }
       }

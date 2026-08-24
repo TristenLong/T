@@ -461,41 +461,33 @@ def chat():
         used_model = 'NONE'
 
         # Multi-LLM Routing Logic
-        # Route to OpenAI (GPT-4o) for coding/complex tasks, otherwise Gemini Flash
+        # Only the Gemini path passes server_tools.AVAILABLE_TOOLS, so Gemini is
+        # preferred whenever it is available -- regardless of intent. OpenAI is a
+        # tool-less fallback used when Gemini is absent or fails.
         coding_keywords = ['code', 'script', 'function', 'python', 'javascript', 'jsx', 'bug', 'fix']
         requires_coding = any(k in msg.lower() for k in coding_keywords)
-        
-        use_openai_first = requires_coding and openai_client
+        intent = 'CODE' if requires_coding else 'CHAT'
 
-        if use_openai_first:
-             logger.info("ROUTING: CODE INTENT DETECTED -> GPT-4o (NO TOOLS SUPPORTED, FALLBACK TO GEMINI)")
-             if gemini_client:
-                 reply = generate_gemini_response(sys_prompt, history, msg)
-                 used_model = PRIMARY_MODEL
-             else:
-                 try:
-                     reply = generate_openai_response(history + [{'role': 'user', 'parts': [{'text': msg}]}], sys_prompt)
-                     used_model = OPENAI_MODEL
-                 except Exception as e:
-                     raise e
+        if not gemini_client and not openai_client:
+            return jsonify({'error': 'NO_LLM_AVAILABLE'}), 500
+
+        openai_payload = history + [{'role': 'user', 'parts': [{'text': msg}]}]
+
+        if gemini_client:
+            logger.info(f'ROUTING: {intent} INTENT -> GEMINI ({PRIMARY_MODEL}, TOOLS ENABLED)')
+            try:
+                reply = generate_gemini_response(sys_prompt, history, msg)
+                used_model = PRIMARY_MODEL
+            except Exception as e:
+                if not openai_client:
+                    raise
+                logger.warning(f'GEMINI FAILED ({e}), FALLBACK TO OPENAI (NO TOOL SUPPORT)')
+                reply = generate_openai_response(openai_payload, sys_prompt)
+                used_model = OPENAI_MODEL
         else:
-             logger.info("ROUTING: CHAT INTENT DETECTED -> GEMINI")
-             if gemini_client:
-                 try:
-                     reply = generate_gemini_response(sys_prompt, history, msg)
-                     used_model = PRIMARY_MODEL
-                 except Exception as e:
-                     logger.warning("GEMINI FAILED, FALLBACK TO OPENAI")
-                     if openai_client:
-                         reply = generate_openai_response(history + [{'role': 'user', 'parts': [{'text': msg}]}], sys_prompt)
-                         used_model = OPENAI_MODEL
-                     else:
-                         raise e
-             elif openai_client:
-                 reply = generate_openai_response(history + [{'role': 'user', 'parts': [{'text': msg}]}], sys_prompt)
-                 used_model = OPENAI_MODEL
-             else:
-                 return jsonify({'error': 'NO_LLM_AVAILABLE'}), 500
+            logger.info(f'ROUTING: {intent} INTENT -> OPENAI ({OPENAI_MODEL}, NO TOOL SUPPORT)')
+            reply = generate_openai_response(openai_payload, sys_prompt)
+            used_model = OPENAI_MODEL
 
         save_memory('user', msg)
         save_memory('model', reply)
@@ -585,41 +577,65 @@ def chat_stream():
         
         coding_keywords = ['code', 'script', 'function', 'python', 'javascript', 'jsx', 'bug', 'fix']
         requires_coding = any(k in msg.lower() for k in coding_keywords)
-        use_openai_first = requires_coding and openai_client
+        intent = 'CODE' if requires_coding else 'CHAT'
+        openai_payload = history + [{'role': 'user', 'parts': [{'text': msg}]}]
 
         def event_stream():
             full_reply = ""
-            model_used = "NONE"
             stream_success = False
-            
-            if use_openai_first:
-                logger.info("STREAM ROUTING: CODE INTENT DETECTED -> GPT-4o (NO TOOLS SUPPORTED, FALLBACK TO GEMINI)")
-                if gemini_client:
-                    # Let it fall through to Gemini since we want tool support
-                    pass
-                else:
-                    try:
-                        for chunk in generate_openai_stream(history + [{'role': 'user', 'parts': [{'text': msg}]}], sys_prompt):
-                            if "[ERROR:" in chunk:
-                                raise RuntimeError(chunk)
-                            full_reply += chunk
-                            yield f"data: {json.dumps({'chunk': chunk, 'model': model_used})}\n\n"
-                        stream_success = True
-                    except Exception as e:
-                        logger.warning(f"OpenAI streaming encountered error ({e}).")
 
-            if not stream_success:
-                logger.info(f"STREAM ROUTING -> GEMINI ({PRIMARY_MODEL})")
+            if not gemini_client and not openai_client:
+                yield f"data: {json.dumps({'error': 'NO_LLM_AVAILABLE'})}\n\n"
+                yield "data: [DONE]\n\n"
+                return
+
+            # Only the Gemini path passes server_tools.AVAILABLE_TOOLS, so it is
+            # preferred whenever available -- regardless of intent.
+            if gemini_client:
+                logger.info(f'STREAM ROUTING: {intent} INTENT -> GEMINI ({PRIMARY_MODEL}, TOOLS ENABLED)')
                 model_used = PRIMARY_MODEL
                 try:
                     for chunk in generate_gemini_stream(sys_prompt, history, msg):
+                        # The generator yields this sentinel instead of raising,
+                        # so it must be caught here or it is streamed to the user
+                        # as content and persisted as if it were a real reply.
+                        if "[ERROR:" in chunk:
+                            raise RuntimeError(chunk)
                         full_reply += chunk
                         yield f"data: {json.dumps({'chunk': chunk, 'model': model_used})}\n\n"
+                    stream_success = True
                 except Exception as e:
-                    logger.error(f"Gemini stream error: {e}")
-                    yield f"data: {json.dumps({'error': str(e)})}\n\n"
-            
-            save_memory('model', full_reply)
+                    logger.warning(f'GEMINI STREAM FAILED ({e}).')
+
+            # Fall back to OpenAI only if it actually exists, otherwise
+            # generate_*_stream would retry against a None client and burn the
+            # full backoff before surfacing a misleading error.
+            if not stream_success and openai_client:
+                if full_reply:
+                    # Discard partial output so the persisted reply is not a
+                    # truncated attempt concatenated with the fallback answer.
+                    logger.info('DISCARDING PARTIAL GEMINI OUTPUT BEFORE FALLBACK.')
+                    full_reply = ""
+                    yield f"data: {json.dumps({'reset': True})}\n\n"
+                logger.info(f'STREAM ROUTING -> OPENAI ({OPENAI_MODEL}, NO TOOL SUPPORT)')
+                model_used = OPENAI_MODEL
+                try:
+                    for chunk in generate_openai_stream(openai_payload, sys_prompt):
+                        if "[ERROR:" in chunk:
+                            raise RuntimeError(chunk)
+                        full_reply += chunk
+                        yield f"data: {json.dumps({'chunk': chunk, 'model': model_used})}\n\n"
+                    stream_success = True
+                except Exception as e:
+                    logger.error(f'OPENAI STREAM FAILED ({e}).')
+
+            if not stream_success:
+                yield f"data: {json.dumps({'error': 'ALL_LLM_STREAMS_FAILED'})}\n\n"
+
+            # Never persist an empty or failed turn -- it would poison both the
+            # replayed history and semantic recall.
+            if full_reply.strip():
+                save_memory('model', full_reply)
             yield "data: [DONE]\n\n"
 
         return Response(event_stream(), mimetype="text/event-stream")

@@ -15,11 +15,24 @@ function startPythonService(name, command, args, cwd) {
         shell: true
     });
 
+    // Without an 'error' listener a failed spawn (e.g. 'uv' not on PATH) emits
+    // an unhandled 'error' event, which crashes the whole Electron process.
+    proc.on('error', (err) => {
+        console.error(`[${name} SPAWN ERROR] ${err.message}`);
+        if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send('process-log', {
+                source: name,
+                type: 'error',
+                message: `Failed to start: ${err.message}`
+            });
+        }
+    });
+
     proc.stdout.on('data', (data) => {
         const msg = data.toString().trim();
         if (!msg) return;
         console.log(`[${name}] ${msg}`);
-        if (mainWindow && mainWindow.webContents) {
+        if (mainWindow && !mainWindow.isDestroyed()) {
             mainWindow.webContents.send('process-log', { source: name, type: 'info', message: msg });
         }
     });
@@ -28,7 +41,7 @@ function startPythonService(name, command, args, cwd) {
         const msg = data.toString().trim();
         if (!msg) return;
         console.error(`[${name} ERROR] ${msg}`);
-        if (mainWindow && mainWindow.webContents) {
+        if (mainWindow && !mainWindow.isDestroyed()) {
             mainWindow.webContents.send('process-log', { source: name, type: 'error', message: msg });
         }
     });
@@ -63,7 +76,14 @@ function createWindow() {
                 webSecurity: false
             }
         });
-        
+
+        let destroyed = false;
+        mainWindow.on('closed', function () {
+            console.log('[ELECTRON] Window closed.');
+            destroyed = true;
+            mainWindow = null;
+        });
+
         // Ghost mode (click-through) disabled for normal window operation.
 
         console.log('[ELECTRON] BrowserWindow created.');
@@ -71,12 +91,17 @@ function createWindow() {
         // In development mode, load Vite dev server
         // In production, load built index.html
         const startUrl = process.env.ELECTRON_START_URL || 'http://127.0.0.1:5173';
-        
+
         const isDev = process.argv.includes('--dev');
         if (isDev) {
             console.log(`[ELECTRON] Loading dev server: ${startUrl}`);
+            // Vite may not have bound its port yet, so retry until it does.
+            // Guarded on `destroyed` -- without it the timer keeps firing after
+            // the window is gone and loadURL throws on a destroyed object.
             const loadWithRetry = () => {
+                if (destroyed || !mainWindow) return;
                 mainWindow.loadURL(startUrl).catch((err) => {
+                    if (destroyed || !mainWindow) return;
                     console.log(`[ELECTRON] Connection failed, retrying in 1s... (${err.message})`);
                     setTimeout(loadWithRetry, 1000);
                 });
@@ -87,19 +112,14 @@ function createWindow() {
             mainWindow.loadFile(path.join(__dirname, 'dist', 'index.html'));
         }
 
-        // Always open DevTools while debugging the black screen
-        mainWindow.webContents.openDevTools({ mode: 'detach' });
+        // Dev-only. This was previously unconditional, which opened a detached
+        // DevTools window in production builds too.
+        if (isDev) {
+            mainWindow.webContents.openDevTools({ mode: 'detach' });
+        }
 
-        mainWindow.webContents.on('console-message', (event, level, message, line, sourceId) => { 
-            console.log(`[CLIENT-LOG] ${message}`); 
-        });
-
-        // Optional: open dev tools automatically for debugging
-        // mainWindow.webContents.openDevTools({ mode: 'detach' });
-
-        mainWindow.on('closed', function () {
-            console.log('[ELECTRON] Window closed.');
-            mainWindow = null;
+        mainWindow.webContents.on('console-message', (event, level, message, line, sourceId) => {
+            console.log(`[CLIENT-LOG] ${message}`);
         });
     } catch (e) {
         console.error('[ELECTRON] Error in createWindow:', e);
