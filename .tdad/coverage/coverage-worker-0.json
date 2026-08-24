@@ -1,0 +1,15 @@
+{
+  "jsCoverage": [],
+  "testTraces": {
+    "[UI-001] should complete jester workflow": {
+      "status": "failed",
+      "apiRequests": [],
+      "consoleLogs": [],
+      "pageErrors": [],
+      "actionResult": null,
+      "domSnapshot": null,
+      "screenshotPath": ".tdad/debug/default/jester/screenshots/ui-001-should-complete-jester-workflow.png"
+    }
+  },
+  "workerIndex": "0"
+}

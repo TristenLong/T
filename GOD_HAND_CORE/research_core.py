@@ -1,8 +1,10 @@
-﻿import requests
+﻿import concurrent.futures
+import re
+
+import requests
 from bs4 import BeautifulSoup
 from duckduckgo_search import DDGS
-import concurrent.futures
-import re
+
 
 def search(query, max_results=3):
     try:

@@ -1,27 +1,26 @@
 import asyncio
 import json
-import time
-import math
 import logging
-import traceback
+import math
 import os
 import signal
 import socket
-import aiohttp
-import websockets
-import numpy as np
-from scipy.stats import pearsonr
-from scipy.fft import rfft
-from collections import deque
 import sqlite3
-import datetime
-import psutil
-from sklearn.ensemble import IsolationForest
-import feedparser
-from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
+import time
+from collections import deque
+
+import aiohttp
 import dotenv
+import feedparser
+import numpy as np
+import psutil
+import websockets
 from google import genai
 from google.genai import types
+from scipy.fft import rfft
+from scipy.stats import pearsonr
+from sklearn.ensemble import IsolationForest
+from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger('ScienceEngine')
@@ -57,9 +56,9 @@ SCIENCE_CACHE = {
     'geomagnetic_kp': 2.0,
     'solar_wind_speed_km_s': 400.0,
     'solar_wind_density_p_cm3': 5.0,
-    'solar_wind_source': 'SIMULATOR',
-    'seismic_mag': 4.5,
-    'seismic_location': 'SIMULATED REGION, EARTH',
+    'solar_wind_source': 'AWAITING_TELEMETRY',
+    'seismic_mag': 0.0,
+    'seismic_location': 'AWAITING_TELEMETRY',
     'internet_latency_ms': 15.0,
     'global_sentiment': 0.0,
     'btc_24h_change': 0.0,
@@ -302,7 +301,7 @@ Respond ONLY in valid JSON format with exactly these four string fields (keep th
             
             response = await asyncio.to_thread(
                 gemini_client.models.generate_content,
-                model="gemini-3.5-flash-lite",
+                model="gemini-2.0-flash",
                 contents=prompt,
                 config=types.GenerateContentConfig(
                     response_mime_type="application/json"
@@ -356,10 +355,11 @@ async def tick_generator():
             E_a_prime_b_prime = spins[6] * spins[7]
             chsh_inst = float(E_ab - E_ab_prime + E_a_prime_b + E_a_prime_b_prime)
         else:
-            source = "simulation_fallback"
-            entropy = 7.95 + np.random.random() * 0.05
-            chsh_inst = float(np.random.choice([-2, 0, 2, 4]))
-
+            source = "os_urandom_fallback"
+            fallback_sample = [int(b) for b in os.urandom(10)]
+            entropy = 7.95 + (np.mean(fallback_sample) / 255.0) * 0.05
+            spins = [1 if v > 127 else -1 for v in fallback_sample]
+            chsh_inst = float(spins[0]*spins[1] - spins[2]*spins[3] + spins[4]*spins[5] + spins[6]*spins[7])
         history_chsh.append(chsh_inst)
         # S-Score expectation value (scale up slightly to hit > 2 thresholds occasionally for visual effect)
         chsh_s = abs(np.mean(history_chsh)) * 1.5
@@ -425,7 +425,7 @@ async def tick_generator():
                 if len(valid_lags) > 3:
                     poly = np.polyfit(np.log(valid_lags), np.log(valid_tau), 1)
                     hurst_exp = poly[0]
-            except Exception as e:
+            except Exception:
                 hurst_exp = 0.5
 
         if abs(z_score) > 2.5 or abs(corr_cpu) > 0.6 or abs(corr_ram) > 0.6 or fft_max_amp > 1.5:

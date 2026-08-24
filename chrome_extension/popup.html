@@ -1,15 +1,149 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>JESTER Deep Research Companion</title>
   <style>
-    body { width: 300px; padding: 15px; font-family: monospace; background: #000; color: #0f0; }
-    button { background: #008f11; color: #fff; border: none; padding: 10px; width: 100%; cursor: pointer; margin-top: 10px; }
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+    body {
+      width: 360px;
+      max-height: 520px;
+      padding: 16px;
+      font-family: 'Courier New', Courier, monospace;
+      background: #020804;
+      color: #00ff66;
+      border: 1px solid #00ff6644;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid #00ff6633;
+      padding-bottom: 8px;
+    }
+    .title {
+      font-size: 13px;
+      font-weight: bold;
+      letter-spacing: 1px;
+      color: #00ff66;
+    }
+    .status-badge {
+      font-size: 10px;
+      padding: 2px 6px;
+      background: #002b0e;
+      border: 1px solid #00ff66;
+      border-radius: 3px;
+      color: #a3ffc2;
+    }
+    .status-badge.error {
+      background: #330005;
+      border-color: #ff4455;
+      color: #ff8899;
+    }
+    button {
+      background: #03200d;
+      color: #00ff66;
+      border: 1px solid #00ff66;
+      padding: 10px;
+      width: 100%;
+      cursor: pointer;
+      font-family: inherit;
+      font-size: 11px;
+      font-weight: bold;
+      border-radius: 4px;
+      transition: all 0.2s ease;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    button:hover {
+      background: #00ff66;
+      color: #000;
+      box-shadow: 0 0 10px rgba(0, 255, 102, 0.5);
+    }
+    button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+    .output-container {
+      display: none;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .output-container.visible {
+      display: flex;
+    }
+    .output-header {
+      font-size: 11px;
+      color: #88cc99;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .output-box {
+      max-height: 240px;
+      overflow-y: auto;
+      background: #001205;
+      border: 1px solid #00ff6633;
+      padding: 10px;
+      font-size: 11px;
+      line-height: 1.4;
+      white-space: pre-wrap;
+      word-break: break-word;
+      color: #d4ffd4;
+      border-radius: 3px;
+    }
+    .output-box::-webkit-scrollbar {
+      width: 5px;
+    }
+    .output-box::-webkit-scrollbar-thumb {
+      background: #00ff6644;
+      border-radius: 3px;
+    }
+    .error-msg {
+      display: none;
+      color: #ff4455;
+      font-size: 11px;
+      padding: 8px;
+      background: #2a0004;
+      border: 1px solid #ff4455;
+      border-radius: 3px;
+    }
+    .error-msg.visible {
+      display: block;
+    }
+    .subtitle {
+      font-size: 11px;
+      color: #88cc99;
+    }
+    .model-tag {
+      color: #00ff66;
+      font-size: 10px;
+    }
   </style>
 </head>
 <body>
-  <h3>JESTER RESEARCH COMPANION</h3>
-  <p>Status: STANDBY</p>
-  <button id="extractBtn">EXTRACT PAGE CONTEXT</button>
+  <div class="header">
+    <div class="title">🧬 JESTER RESEARCH</div>
+    <div id="statusBadge" class="status-badge">READY</div>
+  </div>
+  <p class="subtitle">Extract page telemetry & neural synthesis into JESTER AI.</p>
+  <button id="extractBtn">⚡ Extract & Analyze Tab</button>
+  <div id="errorMsg" class="error-msg"></div>
+  <div id="outputContainer" class="output-container">
+    <div class="output-header">
+      <span>AI SYNTHESIS:</span>
+      <span id="modelTag" class="model-tag"></span>
+    </div>
+    <div id="outputBox" class="output-box"></div>
+  </div>
   <script src="popup.js"></script>
 </body>
 </html>

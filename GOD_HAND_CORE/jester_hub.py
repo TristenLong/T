@@ -1,18 +1,19 @@
 import os
-import sys
-import time
-import subprocess
-import sqlite3
 import random
+import sqlite3
+import subprocess
+import sys
 import threading
+import time
+
+from rich.align import Align
 from rich.console import Console
-from rich.panel import Panel
 from rich.layout import Layout
 from rich.live import Live
+from rich.panel import Panel
+from rich.prompt import Prompt
 from rich.table import Table
 from rich.text import Text
-from rich.prompt import Prompt
-from rich.align import Align
 
 console = Console()
 DB_FILE = 'jester_brain.db'

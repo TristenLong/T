@@ -50,6 +50,7 @@ const SelfAwarenessTest = ({ onComplete }) => {
     };
 
     sequence();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const styles = {
@@ -84,20 +85,25 @@ const SelfAwarenessTest = ({ onComplete }) => {
     },
     skipBtn: {
       marginTop: '30px',
-      background: 'transparent',
+      background: 'rgba(0, 255, 0, 0.1)',
       border: '1px solid #00FF00',
       color: '#00FF00',
-      padding: '8px 16px',
+      padding: '10px 20px',
       cursor: 'pointer',
       fontFamily: 'monospace',
-      opacity: 0.5
+      opacity: 0.8,
+      position: 'relative',
+      zIndex: 100,
+      pointerEvents: 'auto',
+      fontWeight: 'bold',
+      transition: 'all 0.2s',
     }
   };
 
   return (
     <div style={styles.overlay}>
       <div style={styles.container}>
-        {logs.map((log, i) => (
+        {(logs || []).map((log, i) => (
           <div key={i} style={styles.log}>{log}</div>
         ))}
         {showAvatar && (

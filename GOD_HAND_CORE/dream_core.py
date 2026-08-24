@@ -1,9 +1,10 @@
 ﻿import os
-import requests
-from openai import OpenAI
-from dotenv import load_dotenv
 import time
 import webbrowser
+
+import requests
+from dotenv import load_dotenv
+from openai import OpenAI
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = os.path.dirname(BASE_DIR)

@@ -1,8 +1,8 @@
-﻿import os
 import json
+import os
 import subprocess
+
 import system_core
-import miner_analytics
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 GOAL_FILE = os.path.join(BASE_DIR, "jester_directive.json")
@@ -23,7 +23,7 @@ def notify(title, msg):
     $t = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent([Windows.UI.Notifications.ToastTemplateType]::ToastText02)
     $t.GetElementsByTagName("text")[0].AppendChild($t.CreateTextNode("{title}")) > $null
     $t.GetElementsByTagName("text")[1].AppendChild($t.CreateTextNode("{msg}")) > $null
-    [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier("JESTER V200").Show([Windows.UI.Notifications.ToastNotification]::new($t))
+    [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier("JESTER V2000").Show([Windows.UI.Notifications.ToastNotification]::new($t))
     """
     subprocess.run(["powershell", "-Command", script], capture_output=True)
 
@@ -31,15 +31,12 @@ def execute_directive():
     goal = get_directive()
     if goal == "passive": return
     
-    if goal == "mining_max":
-        stats = miner_analytics.analyze_miner()
-        if stats.get("status") != "MINING":
-            notify("JESTER SINGULARITY", "Miner instability detected. Optimizing system environment...")
-            system_core.optimize("mining")
-            return "OPTIMIZED_FOR_MINING"
-            
+    if goal == "swarm_optimize" or goal == "performance_mode":
+        system_core.optimize("system")
+        notify("JESTER SINGULARITY", "System performance optimized for AI Swarm.")
+        return "OPTIMIZED_FOR_SWARM"
+        
     if goal == "gaming_mode":
-        # Ensure miner is dead
-        killed = system_core.kill_process("SRBMiner")
-        if killed:
-            notify("JESTER SINGULARITY", "Gaming Mode Enforced. Miner halted.")
+        notify("JESTER SINGULARITY", "Gaming Mode Active. Background workloads silenced.")
+        return "GAMING_MODE_ACTIVE"
+

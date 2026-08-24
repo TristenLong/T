@@ -1,4 +1,5 @@
 ﻿import os
+
 import vector_core
 
 IGNORE_DIRS = {".git", "node_modules", "__pycache__", "dist", "build", "venv", "env", "AppData"}

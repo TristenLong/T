@@ -1,8 +1,9 @@
-﻿import os
-import ast
-from openai import OpenAI
-from dotenv import load_dotenv
+﻿import ast
 import json
+import os
+
+from dotenv import load_dotenv
+from openai import OpenAI
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = os.path.dirname(BASE_DIR)

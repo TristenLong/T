@@ -1,19 +1,20 @@
 import asyncio
-import json
-import time
-import math
-import logging
-import traceback
-import os
-import aiohttp
-import websockets
-import numpy as np
-from scipy.stats import pearsonr
-from scipy.fft import rfft
-from collections import deque
-import sqlite3
 import datetime
+import json
+import logging
+import math
+import os
+import sqlite3
+import time
+import traceback
+from collections import deque
+
+import aiohttp
+import numpy as np
 import psutil
+import websockets
+from scipy.fft import rfft
+from scipy.stats import pearsonr
 from sklearn.ensemble import IsolationForest
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -29,7 +30,11 @@ CACHE = {
     'net_recv_mb': 0.0,
     'net_sent_mb': 0.0,
     'net_recv_rate': 0.0,
-    'net_sent_rate': 0.0
+    'net_sent_rate': 0.0,
+    'seismic_mag': 0.0,
+    'seismic_location': 'None',
+    'geomagnetic_kp': 0.0,
+    'xray_flux': 0.0
 }
 
 # Network tracking
@@ -107,13 +112,53 @@ async def fetch_anu_qrng(session):
                 logger.debug(f"Fetched {len(numbers)} quantum random numbers.")
     except Exception as e:
         logger.warning(f"ANU QRNG fetch failed: {e}")
-        qrng_buffer.extend([int(b) for b in os.urandom(100)])
+        qrng_buffer.extend([b for b in os.urandom(100)])
+
+async def fetch_external_science(session):
+    try:
+        # USGS Earthquakes
+        async with session.get("https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/all_hour.geojson", timeout=10) as resp:
+            eq_data = await resp.json()
+            if eq_data.get("features"):
+                quakes = eq_data["features"]
+                mags = [q["properties"]["mag"] for q in quakes if q["properties"]["mag"] is not None]
+                if mags:
+                    max_q = max(quakes, key=lambda q: q["properties"]["mag"] or 0)
+                    CACHE['seismic_mag'] = max_q["properties"]["mag"]
+                    CACHE['seismic_location'] = max_q["properties"]["place"]
+    except Exception as e:
+        logger.warning(f"USGS fetch failed: {e}")
+
+    try:
+        # NOAA K-Index
+        async with session.get("https://services.swpc.noaa.gov/products/noaa-planetary-k-index.json", timeout=10) as resp:
+            noaa_data = await resp.json()
+            if len(noaa_data) > 1:
+                CACHE['geomagnetic_kp'] = float(noaa_data[-1][1])
+    except Exception as e:
+        logger.warning(f"NOAA K-Index fetch failed: {e}")
+
+    try:
+        # NOAA X-Ray Flux
+        async with session.get("https://services.swpc.noaa.gov/json/goes/primary/xrays-1-day.json", timeout=10) as resp:
+            xray_data = await resp.json()
+            if xray_data:
+                # Find the most recent flux
+                CACHE['xray_flux'] = float(xray_data[-1].get('flux', 0.0))
+    except Exception as e:
+        logger.warning(f"NOAA X-Ray Flux fetch failed: {e}")
 
 async def background_poller():
     """Polls OS telemetry quickly."""
-    while True:
-        await fetch_os_telemetry()
-        await asyncio.sleep(1.0) # Poll OS every second
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+    async with aiohttp.ClientSession(headers=headers) as session:
+        count = 0
+        while True:
+            await fetch_os_telemetry()
+            if count % 60 == 0:  # Fetch external science every 60 seconds
+                await fetch_external_science(session)
+            count += 1
+            await asyncio.sleep(1.0) # Poll OS every second
 
 async def qrng_poller():
     """Polls the QRNG API when the buffer is low."""
@@ -190,7 +235,7 @@ async def tick_generator():
             cursor.execute('''
                 INSERT INTO os_telemetry (timestamp, entropy, cpu_percent, ram_percent, disk_percent, net_recv_rate, anomaly_score, is_anomaly)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (time.time(), entropy, CACHE['cpu_percent'], CACHE['ram_percent'], CACHE['disk_percent'], CACHE['net_recv_rate'], float(ml_anomaly_score), bool(anomaly)))
+            ''', (time.time(), entropy, CACHE['cpu_percent'], CACHE['ram_percent'], CACHE['disk_percent'], CACHE['net_recv_rate'], ml_anomaly_score, anomaly))
             db_conn.commit()
         except Exception as e:
             logger.error(f"Database insertion failed: {e}")
@@ -207,14 +252,18 @@ async def tick_generator():
                 "os_net_recv_rate": CACHE['net_recv_rate'],
                 "os_net_sent_rate": CACHE['net_sent_rate'],
                 "os_net_recv_total": CACHE['net_recv_mb'],
-                "os_net_sent_total": CACHE['net_sent_mb']
+                "os_net_sent_total": CACHE['net_sent_mb'],
+                "geomagnetic_kp": CACHE['geomagnetic_kp'],
+                "seismic_mag": CACHE['seismic_mag'],
+                "seismic_location": CACHE['seismic_location'],
+                "xray_flux": CACHE['xray_flux']
             },
             "analytics": {
                 "rolling_z_score": round(z_score, 2),
                 "pearson_r_quantum_cpu": corr_cpu,
                 "pearson_r_quantum_ram": corr_ram,
                 "fft_dominant_amplitude": round(fft_max_amp, 4),
-                "ml_anomaly_score": round(float(ml_anomaly_score), 4),
+                "ml_anomaly_score": round(ml_anomaly_score, 4),
                 "ml_anomaly_detected": ml_is_anomaly,
                 "anomaly_detected": anomaly
             }
@@ -239,8 +288,23 @@ async def main():
     asyncio.create_task(qrng_poller())
 
     logger.info("Starting Advanced OS Telemetry Engine on ws://0.0.0.0:8765")
-    async with websockets.serve(websocket_handler, "0.0.0.0", 8765):
-        await asyncio.Future()
+    server = None
+    for attempt in range(5):
+        try:
+            server = await websockets.serve(websocket_handler, "0.0.0.0", 8765)
+            logger.info("Science Engine WebSocket server bound to ws://0.0.0.0:8765")
+            break
+        except OSError as e:
+            if attempt < 4:
+                logger.warning(f"Port 8765 busy ({e}), retrying in 2 seconds... (attempt {attempt + 1}/5)")
+                await asyncio.sleep(2)
+            else:
+                logger.error(f"Failed to bind port 8765 after 5 attempts: {e}")
+                raise
+
+    if server:
+        async with server:
+            await asyncio.Future()
 
 if __name__ == "__main__":
     try:

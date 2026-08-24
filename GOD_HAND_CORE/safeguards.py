@@ -1,6 +1,6 @@
+import logging
 import os
 import re
-import logging
 
 logger = logging.getLogger('SAFEGUARDS')
 

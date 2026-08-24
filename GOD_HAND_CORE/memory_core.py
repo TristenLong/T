@@ -1,7 +1,8 @@
-import sqlite3
-import os
 import datetime
 import json
+import os
+import sqlite3
+
 DB_FILE = 'jester_brain.db'
 def init_db():
     conn = sqlite3.connect(DB_FILE)

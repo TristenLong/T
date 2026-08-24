@@ -1,11 +1,16 @@
 import { test, expect } from 'vitest';
 import React from 'react';
-import { render, screen } from '@testing-library/react';
+import { render, screen, fireEvent } from '@testing-library/react';
 import App from './App.jsx';
 
-test('renders main header and memory panel', () => {
+test('renders boot sequence and allows entering main HUD', () => {
   render(<App />);
 
-  expect(screen.getByText(/JESTER_V084: MATRIX RESURRECTIONS/i)).toBeInTheDocument();
-  expect(screen.getByText(/NEURAL_MEMORY/i)).toBeInTheDocument();
+  const overrideBtn = screen.getByText(/OVERRIDE BOOT SEQUENCE/i);
+  expect(overrideBtn).toBeInTheDocument();
+  fireEvent.click(overrideBtn);
+
+  expect(screen.getByText(/FUSION HUD/i)).toBeInTheDocument();
+  expect(screen.getByText(/NEURAL_MEMORY_STREAM/i)).toBeInTheDocument();
 });
+

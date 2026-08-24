@@ -1,7 +1,8 @@
-﻿import sys
-import io
+﻿import io
+import sys
 import traceback
-from contextlib import redirect_stdout, redirect_stderr
+from contextlib import redirect_stderr, redirect_stdout
+
 
 class PythonInterpreter:
     def __init__(self):

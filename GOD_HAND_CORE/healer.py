@@ -1,7 +1,7 @@
-import subprocess
-import time
 import os
 import sqlite3
+import subprocess
+import time
 
 SERVER_SCRIPT = 'server.py'
 DB_FILE = 'jester_V63_SINGULARITY.db'

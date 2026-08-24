@@ -61,6 +61,8 @@ const JesterBrain = ({ isSpeaking, isListening, isAnomaly }) => {
             emissiveIntensity={isAnomaly ? 3 : (isSpeaking ? 2 : 0.5)}
         />
       </TorusKnot>
+
+      {/* Postprocessing removed due to R3F version crash */}
     </group>
   );
 };

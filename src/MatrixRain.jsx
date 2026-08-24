@@ -29,8 +29,10 @@ const MatrixRain = ({ color = '#0F0' }) => {
     let columns = createColumns();
 
     const draw = () => {
+      ctx.globalCompositeOperation = 'destination-out';
       ctx.fillStyle = 'rgba(0, 0, 0, 0.1)';
       ctx.fillRect(0, 0, width, height);
+      ctx.globalCompositeOperation = 'source-over';
 
       columns.forEach(col => {
         ctx.font = `${col.size}px monospace`;

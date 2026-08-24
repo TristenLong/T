@@ -1,10 +1,12 @@
-﻿import os
+﻿import asyncio
 import json
-import asyncio
+import os
+
+from dotenv import load_dotenv
+from openai import OpenAI
+
 import genesis_core
 import memory_core
-from openai import OpenAI
-from dotenv import load_dotenv
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = os.path.dirname(BASE_DIR)

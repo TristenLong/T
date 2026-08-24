@@ -1,0 +1,36 @@
+{
+  "version": "1.0",
+  "nodes": [
+    {
+      "id": "node-1787380001575",
+      "workflowId": "default",
+      "title": "jester",
+      "description": "a full self learning ai and problem solver and anomaly detection and science tester ultimate tool",
+      "nodeType": "feature",
+      "filePath": "",
+      "fileName": "jester",
+      "language": "typescript",
+      "preConditions": [],
+      "features": [],
+      "testData": null,
+      "contextFiles": [
+        "README.md"
+      ],
+      "position": {
+        "x": -197.74181768196297,
+        "y": -11.596743424393324
+      },
+      "status": "failed",
+      "createdAt": "2026-08-22T06:26:41.576Z",
+      "updatedAt": "2026-08-22T06:26:41.576Z",
+      "hasBddSpec": true,
+      "hasTestDetails": true,
+      "bddHasRealContent": true,
+      "testHasRealContent": false,
+      "bddSpecFile": ".tdad\\workflows\\default\\jester\\jester.feature",
+      "testCodeFile": ".tdad\\workflows\\default\\jester/jester.test.js",
+      "actionFile": ".tdad\\workflows\\default\\jester/jester.action.js"
+    }
+  ],
+  "edges": []
+}

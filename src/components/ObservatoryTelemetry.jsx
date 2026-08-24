@@ -83,11 +83,11 @@ export default function ObservatoryTelemetry({ onAnomalyChange }) {
         setLogs(prev => [newLog, ...prev].slice(0, 50));
 
         setFftData([
-            Math.random() * (a.fft_dominant_amplitude || 1),
-            Math.random() * (a.fft_dominant_amplitude || 1) * 2,
-            a.fft_dominant_amplitude || 0,
-            Math.random() * (a.fft_dominant_amplitude || 1) * 1.5,
-            Math.random() * (a.fft_dominant_amplitude || 1) * 0.5
+            (a.fft_dominant_amplitude || 1) * 0.5,
+            (a.fft_dominant_amplitude || 1) * 1.0,
+            (a.fft_dominant_amplitude || 1) * 2.0,
+            (a.fft_dominant_amplitude || 1) * 1.5,
+            (a.fft_dominant_amplitude || 1) * 0.5
         ]);
 
         if (audioEnabled && audioCtxRef.current && oscillatorRef.current) {
@@ -144,12 +144,12 @@ export default function ObservatoryTelemetry({ onAnomalyChange }) {
     labels: Array(history.length).fill(''),
     datasets: [{
         label: 'Shannon Entropy',
-        data: history.map(h => h.entropy),
+        data: (history || []).map(h => h.entropy),
         borderColor: '#00ff88',
         backgroundColor: 'rgba(0,255,136,0.1)',
         fill: true,
-        pointRadius: history.map(h => h.anomaly ? 4 : 0),
-        pointBackgroundColor: history.map(h => h.anomaly ? '#ff3366' : '#00ff88'),
+        pointRadius: (history || []).map(h => h.anomaly ? 4 : 0),
+        pointBackgroundColor: (history || []).map(h => h.anomaly ? '#ff3366' : '#00ff88'),
         borderWidth: 2,
         tension: 0.1
     }]
@@ -186,7 +186,13 @@ export default function ObservatoryTelemetry({ onAnomalyChange }) {
   const a = analytics || {};
 
   const kpPercent = Math.min((m.geomagnetic_kp || 0) / 9 * 100, 100);
-  const jesterCoh = isAnomaly ? (60 + Math.random()*20) : (98 + Math.random()*2);
+  
+  // Calculate dynamic Jester Coherence from actual engine entropy and machine learning anomaly score.
+  const baseEntropy = a.entropy || 7.95;
+  const entropyVariance = Math.max(0, (baseEntropy - 7.95) / 0.05); // normalized 0-1
+  const jesterCoh = isAnomaly 
+    ? (60 + Math.min(20, (a.ml_anomaly_score || 1) * 20)) 
+    : (98 + (entropyVariance * 2));
 
   return (
     <>
@@ -287,11 +293,27 @@ export default function ObservatoryTelemetry({ onAnomalyChange }) {
         <div className="sub-readout">OUT: <b style={{color: 'var(--accent-cyan)'}}>{(m.os_net_sent_rate || 0).toFixed(2)}</b> MB/s</div>
       </div>
 
+      {/* Row 3 Metrics */}
+      <div className="panel col-6">
+        <div className="panel-label"><span>GEOMAGNETIC K-INDEX</span></div>
+        <div className="big-readout">{(m.geomagnetic_kp || 0).toFixed(1)}<span className="unit">Kp</span></div>
+        <div className="gauge-container">
+          <div className="gauge-track"><div className="gauge-fill" style={{width: `${Math.min(((m.geomagnetic_kp || 0) / 9) * 100, 100)}%`, background: (m.geomagnetic_kp || 0) > 4 ? 'var(--accent-red)' : 'var(--accent-cyan)'}}></div></div>
+        </div>
+        <div className="sub-readout">NOAA PLANETARY INDEX</div>
+      </div>
+
+      <div className="panel col-6">
+        <div className="panel-label"><span>SEISMIC ACTIVITY (1H)</span></div>
+        <div className="big-readout">M{(m.seismic_mag || 0).toFixed(1)}</div>
+        <div className="sub-readout">LOC: <b style={{color: 'var(--accent-gold)'}}>{m.seismic_location || 'NO DATA'}</b></div>
+      </div>
+
       {/* Logs */}
       <div className="panel col-12" style={{ maxHeight: '250px', overflowY: 'auto' }}>
         <div className="panel-label"><span>SYSTEM TELEMETRY LOG</span></div>
         <div style={{ fontSize: '12px', color: 'var(--text-muted)', lineHeight: '1.8' }}>
-          {logs.map((log, i) => (
+          {(logs || []).map((log, i) => (
             <div key={i} style={{ padding: '4px 0', borderBottom: '1px solid rgba(255,255,255,0.02)', color: log.anomaly ? 'var(--accent-gold)' : 'inherit' }}>
               <span style={{ color: 'var(--accent-green)', opacity: 0.7 }}>[{log.time}]</span> SYSTEM_TICK: H=<span style={{color: log.anomaly ? 'var(--accent-red)' : 'var(--text-main)'}}>{log.entropy}</span> | ML=<span style={{color: log.anomaly ? 'var(--accent-red)' : 'var(--text-main)'}}>{log.ml}</span> | FFT_AMP=<span style={{color: log.anomaly ? 'var(--accent-red)' : 'var(--text-main)'}}>{log.fft}</span>
               {log.anomaly && <span> ⚠ <span style={{color: 'var(--accent-red)'}}>[ANOMALY_TRIGGERED]</span></span>}

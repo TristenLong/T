@@ -1,13 +1,31 @@
 @echo off
-title JESTER V086: QUANTUM OMNIPRESENCE
-echo [SYSTEM] INITIALIZING JESTER V086...
+title JESTER V2000: SINGULARITY (SWARM HYPERVISOR)
+echo ===================================================================
+echo    INITIALIZING JESTER V2000: SINGULARITY (SWARM HYPERVISOR)...
+echo ===================================================================
 
-:: Kill existing to ensure clean slate (Watchdog will restart them)
-taskkill /F /IM python.exe /FI "WINDOWTITLE eq JESTER*" 2>nul
-taskkill /F /IM python.exe /FI "WINDOWTITLE eq SERVER" 2>nul
-taskkill /F /IM node.exe 2>nul
+cd /d "%~dp0"
 
-echo [SYSTEM] HANDING CONTROL TO WATCHDOG...
-cd /d "C:\Users\trist\gemini-voice-assistant"
-python jester_watchdog.py
+:: Check virtual environment python
+set "PYTHON_EXE=%~dp0GOD_HAND_CORE\.venv\Scripts\python.exe"
+if not exist "%PYTHON_EXE%" (
+    set "PYTHON_EXE=%~dp0.venv\Scripts\python.exe"
+)
+if not exist "%PYTHON_EXE%" (
+    set "PYTHON_EXE=python"
+)
+
+echo [SYSTEM] Using Python: %PYTHON_EXE%
+echo [SYSTEM] Starting Vite Dev Server...
+start /b cmd /c "npx vite"
+
+echo [SYSTEM] Waiting for Vite...
+timeout /t 3 /nobreak >nul
+
+echo [SYSTEM] Booting JESTER Electron HUD...
+call .\node_modules\.bin\electron.cmd . --dev
+
+:: Clean up Vite when Electron closes
+echo [SYSTEM] Shutting down...
+taskkill /f /im node.exe >nul 2>&1
 pause

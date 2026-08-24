@@ -1,10 +1,11 @@
-﻿import os
+import os
 import sys
 import threading
-from flask import Flask, request, jsonify
+
+from dotenv import load_dotenv
+from flask import Flask, jsonify, request
 from flask_cors import CORS
 from loguru import logger
-from dotenv import load_dotenv
 
 load_dotenv(override=True)
 
@@ -35,7 +36,7 @@ def pulse():
         'status': 'ONLINE',
         'cpu': psutil.cpu_percent(),
         'ram': psutil.virtual_memory().percent,
-        'model': os.getenv('JESTER_PRIMARY_LLM', 'gemini-2.0-flash-lite'),
+        'model': os.getenv('JESTER_PRIMARY_LLM', 'gemini-3.1-pro'),
         'logic_core': 'STABLE'
     })
 

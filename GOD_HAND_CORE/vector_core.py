@@ -1,9 +1,10 @@
-﻿import sqlite3
-import numpy as np
+﻿import json
 import os
-import json
-from openai import OpenAI
+import sqlite3
+
+import numpy as np
 from dotenv import load_dotenv
+from openai import OpenAI
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = os.path.dirname(BASE_DIR)

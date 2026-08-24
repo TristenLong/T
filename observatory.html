@@ -57,8 +57,8 @@
     background-size: 40px 40px;
     z-index: -1;
     pointer-events: none;
-    mask-image: radial-gradient(circle at center, black 40%, transparent 100%);
     -webkit-mask-image: radial-gradient(circle at center, black 40%, transparent 100%);
+    mask-image: radial-gradient(circle at center, black 40%, transparent 100%);
   }
 
   .wrap {
@@ -135,6 +135,7 @@
     padding: 8px 16px;
     border: 1px solid var(--panel-border);
     border-radius: 4px;
+    -webkit-backdrop-filter: blur(5px);
     backdrop-filter: blur(5px);
   }
 
@@ -170,6 +171,16 @@
     100% { transform: scale(1.1); opacity: 1; box-shadow: 0 0 20px var(--accent-green); }
   }
 
+  /* Utility classes to replace inline styles */
+  .audio-btn { margin-top: 10px; background: transparent; color: var(--accent-cyan); border: 1px solid var(--accent-cyan); padding: 5px 10px; cursor: pointer; font-family: 'Orbitron'; font-size: 10px; }
+  .text-cyan { color: var(--accent-cyan); }
+  .text-purple { color: var(--accent-purple); }
+  .border-purple { border-color: var(--accent-purple); }
+  .bg-green { background: var(--accent-green); }
+  .text-gold { color: var(--accent-gold); }
+  .text-red { color: var(--accent-red); }
+  .mt-20 { margin-top: 20px; }
+
   .grid {
     display: grid;
     grid-template-columns: repeat(12, 1fr);
@@ -182,6 +193,7 @@
     border-radius: 8px;
     padding: 24px;
     position: relative;
+    -webkit-backdrop-filter: blur(10px);
     backdrop-filter: blur(10px);
     box-shadow: inset 0 0 20px var(--panel-glow), 0 4px 15px rgba(0,0,0,0.5);
     transition: transform 0.2s, box-shadow 0.2s;
@@ -382,7 +394,7 @@
       <div>
         <h1>OMNISCIENCE <span class="highlight">OBSERVATORY</span></h1>
         <div class="subtitle">JESTER V1000 GOD HAND :: QUANTUM / MACRO-STATE / FREQUENCY</div>
-        <button id="audioBtn" style="margin-top: 10px; background: transparent; color: var(--accent-cyan); border: 1px solid var(--accent-cyan); padding: 5px 10px; cursor: pointer; font-family: 'Orbitron'; font-size: 10px;">ENABLE SONIFICATION</button>
+        <button id="audioBtn" class="audio-btn">ENABLE SONIFICATION</button>
       </div>
     </div>
     <div class="status-container">
@@ -413,7 +425,7 @@
     <div class="panel chart-panel-small">
       <div class="panel-label">
         <span>QUANTUM FFT FREQUENCY</span>
-        <span class="tag" style="color: var(--accent-purple); border-color: var(--accent-purple)">AMPLITUDE</span>
+        <span class="tag text-purple border-purple">AMPLITUDE</span>
       </div>
       <canvas id="fftChart"></canvas>
     </div>
@@ -422,7 +434,7 @@
     <div class="panel col-4">
       <div class="panel-label"><span>QUANTUM ENTROPY</span></div>
       <div class="big-readout" id="entropyVal">0.0000<span class="unit">bits</span></div>
-      <div class="sub-readout">Z-SCORE: <b id="zscoreVal" style="color: var(--accent-cyan)">0.00</b> | ML SCORE: <b id="mlScoreVal" style="color: var(--accent-purple)">0.00</b></div>
+      <div class="sub-readout">Z-SCORE: <b id="zscoreVal" class="text-cyan">0.00</b> | ML SCORE: <b id="mlScoreVal" class="text-purple">0.00</b></div>
     </div>
 
     <div class="panel col-4">
@@ -435,7 +447,7 @@
       <div class="panel-label"><span>JESTER COHERENCE</span></div>
       <div class="big-readout" id="jesterCoherence">0<span class="unit">%</span></div>
       <div class="gauge-container">
-        <div class="gauge-track"><div class="gauge-fill" id="jesterGauge" style="width:0%; background: var(--accent-green);"></div></div>
+        <div class="gauge-track"><div class="gauge-fill bg-green" id="jesterGauge"></div></div>
       </div>
       <div class="sub-readout">COGNITIVE LOAD: <b id="jesterLoad">IDLE</b></div>
     </div>
@@ -445,7 +457,7 @@
       <div class="panel-label"><span>GEOMAGNETIC (Kp)</span></div>
       <div class="big-readout" id="kpVal">0.0</div>
       <div class="gauge-container">
-        <div class="gauge-track"><div class="gauge-fill" id="kpGauge" style="width:0%; background: var(--accent-green);"></div></div>
+        <div class="gauge-track"><div class="gauge-fill bg-green" id="kpGauge"></div></div>
         <div class="gauge-markers"><span>0</span><span>9</span></div>
       </div>
       <div class="sub-readout">PLANETARY INDEX</div>
@@ -460,13 +472,13 @@
     <div class="panel col-3">
       <div class="panel-label"><span>SOLAR WIND</span></div>
       <div class="big-readout" id="swVal">0<span class="unit">km/s</span></div>
-      <div class="sub-readout">DENSITY: <b id="swDensity" style="color: var(--accent-gold)">0.0</b> p/cm³<br>CME: <b id="cmeVal" style="color: var(--accent-red)">None</b></div>
+      <div class="sub-readout">DENSITY: <b id="swDensity" class="text-gold">0.0</b> p/cm³<br>CME: <b id="cmeVal" class="text-red">None</b></div>
     </div>
 
     <div class="panel col-3">
       <div class="panel-label"><span>SEISMIC (M4.5+)</span></div>
       <div class="big-readout" id="quakeVal">M 0.0</div>
-      <div class="sub-readout" id="quakePlace" style="margin-top: 20px;">AWAITING DATA...</div>
+      <div class="sub-readout mt-20" id="quakePlace">AWAITING DATA...</div>
     </div>
 
     <!-- ROW 3: LOGS -->
@@ -778,20 +790,23 @@ function logTick(payload) {
   while (logEl.children.length > 50) logEl.removeChild(logEl.lastChild);
 }
 
-// Generates simulated "Idea" data that isn't in the original python backend payload
-function generateMockData(payload) {
-    // Simulate Jester Coherence (drops during anomalies)
-    let coherence = 98 + Math.random() * 2;
+// Calculate Jester Coherence dynamically from live telemetry (Entropy & ML Scores)
+function calculateCoherence(payload) {
+    const base = 100;
+    const entropyPenalty = Math.abs(payload.metrics.shannon_entropy - 7.95) * 50;
+    const mlPenalty = Math.abs(payload.analytics.ml_anomaly_score || 0) * 5;
+    
+    let coherence = base - entropyPenalty - mlPenalty;
     if (payload.analytics.anomaly_detected) {
-        coherence = 60 + Math.random() * 20;
+        coherence -= 15;
     }
-    return { coherence: coherence };
+    return Math.max(0, Math.min(100, coherence));
 }
 
 function render(payload) {
   const m = payload.metrics;
   const a = payload.analytics;
-  const mock = generateMockData(payload);
+  const coherence = calculateCoherence(payload);
 
   // DOM Updates
   document.getElementById('entropyVal').innerHTML = m.shannon_entropy.toFixed(4) + '<span class="unit">bits</span>';
@@ -809,11 +824,11 @@ function render(payload) {
   document.getElementById('magVal').innerHTML = (m.magnetometer_bt || 0).toFixed(1) + '<span class="unit">nT</span>';
   document.getElementById('xrayVal').innerHTML = (m.xray_flux || 0).toExponential(2) + '<span class="unit">W/m²</span>';
 
-  // Update Mock Data Fields
-  document.getElementById('jesterCoherence').innerHTML = Math.round(mock.coherence) + '<span class="unit">%</span>';
-  setGauge('jesterGauge', mock.coherence, mock.coherence < 80 ? 'var(--accent-red)' : 'var(--accent-green)');
-  document.getElementById('jesterLoad').textContent = mock.coherence < 80 ? 'ANALYZING_ANOMALY' : 'NORMAL';
-  document.getElementById('jesterLoad').style.color = mock.coherence < 80 ? 'var(--accent-red)' : 'var(--accent-green)';
+  // Update Coherence Data Fields
+  document.getElementById('jesterCoherence').innerHTML = Math.round(coherence) + '<span class="unit">%</span>';
+  setGauge('jesterGauge', coherence, coherence < 80 ? 'var(--accent-red)' : 'var(--accent-green)');
+  document.getElementById('jesterLoad').textContent = coherence < 80 ? 'ANALYZING_ANOMALY' : 'NORMAL';
+  document.getElementById('jesterLoad').style.color = coherence < 80 ? 'var(--accent-red)' : 'var(--accent-green)';
 
 
   if (m.seismic_mag) {

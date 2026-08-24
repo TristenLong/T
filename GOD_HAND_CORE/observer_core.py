@@ -1,12 +1,14 @@
-﻿import pyautogui
-import os
-import json
 import base64
 import io
-from PIL import Image
-from openai import OpenAI
-from google import genai
+import json
+import os
+
+import pyautogui
 from dotenv import load_dotenv
+from google import genai
+from openai import OpenAI
+from PIL import Image
+
 import learning_core
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -30,7 +32,8 @@ def analyze_and_extract():
             try:
                 client = genai.Client(api_key=GEMINI_API_KEY)
                 pil_img = Image.open(io.BytesIO(img_bytes))
-                response = client.models.generate_content(model="gemini-2.0-flash-lite", contents=[prompt, pil_img])
+                model_name = os.getenv("JESTER_PRIMARY_LLM", "gemini-3.1-pro")
+                response = client.models.generate_content(model=model_name, contents=[prompt, pil_img])
                 raw_text = response.text
             except: pass
 

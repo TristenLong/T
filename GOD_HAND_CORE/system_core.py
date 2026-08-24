@@ -1,6 +1,8 @@
-﻿import os
+import os
 import subprocess
+
 import psutil
+
 
 def set_power_mode(mode="balanced"):
     PLANS = {
@@ -34,9 +36,9 @@ def clean_temp():
                 except: pass
     return f"CLEANED_{deleted}_FILES"
 
-def optimize(target="mining"):
+def optimize(target="system"):
     report = []
-    if target == "mining":
+    if target in ["system", "swarm", "high_perf"]:
         report.append(set_power_mode("high_perf"))
         bloat = ["onedrive", "teams", "msedge", "skype", "cortana"]
         for b in bloat:
@@ -45,6 +47,5 @@ def optimize(target="mining"):
         report.append(clean_temp())
     elif target == "gaming":
         report.append(set_power_mode("high_perf"))
-        k = kill_process("SRBMiner")
-        report.append(f"MINER_PAUSED: {k}")
+        report.append(clean_temp())
     return "\n".join(report)

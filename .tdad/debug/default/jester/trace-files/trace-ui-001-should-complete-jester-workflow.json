@@ -1,0 +1,20 @@
+{
+  "testTitle": "[UI-001] should complete jester workflow",
+  "timestamp": "2026-08-23T13:19:12.548Z",
+  "status": "failed",
+  "duration": 289,
+  "errorMessage": "Error: Test not implemented yet",
+  "callStack": [
+    {
+      "file": "C:\\Users\\trist\\gemini-voice-assistant\\.tdad\\workflows\\default\\jester\\jester.test.js",
+      "line": 17,
+      "column": 15
+    }
+  ],
+  "apiRequests": [],
+  "consoleLogs": [],
+  "pageErrors": [],
+  "actionResult": null,
+  "domSnapshot": null,
+  "screenshotPath": ".tdad/debug/default/jester/screenshots/ui-001-should-complete-jester-workflow.png"
+}

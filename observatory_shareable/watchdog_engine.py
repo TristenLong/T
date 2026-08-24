@@ -1,8 +1,8 @@
-import subprocess
-import time
-import sys
 import logging
 import socket
+import subprocess
+import sys
+import time
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("Watchdog")

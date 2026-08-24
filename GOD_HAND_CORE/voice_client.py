@@ -1,12 +1,13 @@
-import os
 import asyncio
-import google.generativeai as genai
+import os
+
 import edge_tts
-import speech_recognition as sr
-import pygame
-import sounddevice as sd
+import google.generativeai as genai
 import numpy as np
+import pygame
 import scipy.io.wavfile as wav
+import sounddevice as sd
+import speech_recognition as sr
 from dotenv import load_dotenv
 
 # 1. Setup Gemini
@@ -35,7 +36,7 @@ if not API_KEY or API_KEY == "YOUR_FREE_API_KEY":
     exit(1)
 
 genai.configure(api_key=API_KEY)
-model = genai.GenerativeModel('gemini-1.5-flash')
+model = genai.GenerativeModel('gemini-2.0-flash')
 
 # Initialize Pygame Mixer for Audio
 try:

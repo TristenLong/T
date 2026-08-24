@@ -1,10 +1,11 @@
-﻿import os
+﻿import importlib
+import os
+import subprocess
 import sys
 import time
+
 import psutil
 import requests
-import importlib
-import subprocess
 from dotenv import load_dotenv
 
 REQUIRED_PACKAGES = [
