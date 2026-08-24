@@ -32,7 +32,10 @@ def main():
 
     # Clean up
     print("[SYSTEM] Shutting down...")
-    vite_process.terminate()
+    try:
+        subprocess.run(["taskkill", "/f", "/im", "node.exe"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
+        vite_process.terminate()
     input("Press Enter to exit...")
 
 if __name__ == "__main__":

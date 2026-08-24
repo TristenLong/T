@@ -70,7 +70,7 @@ function createWindow() {
 
         // In development mode, load Vite dev server
         // In production, load built index.html
-        const startUrl = process.env.ELECTRON_START_URL || 'http://localhost:5173';
+        const startUrl = process.env.ELECTRON_START_URL || 'http://127.0.0.1:5173';
         
         const isDev = process.argv.includes('--dev');
         if (isDev) {
