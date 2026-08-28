@@ -162,6 +162,10 @@ function App() {
         headers: { 'Content-Type': 'application/json' }, 
         body: JSON.stringify({ message: msg, tool_args: toolArgs }) 
       });
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(`Server returned ${res.status}: ${text}`);
+      }
       
       const reader = res.body.getReader();
       const decoder = new TextDecoder("utf-8");

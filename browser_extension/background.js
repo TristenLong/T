@@ -1,4 +1,8 @@
-/* global chrome */
+/* global chrome, importScripts, JesterAuth */
+
+// Classic MV3 service worker (no "type": "module" in the manifest), so
+// importScripts is how the shared auth helper gets loaded.
+importScripts('jester-auth.js');
 
 chrome.runtime.onInstalled.addListener(() => {
   chrome.contextMenus.removeAll(() => {
@@ -50,30 +54,39 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 });
 
 async function sendToJester(data) {
-  const endpoints = [
-    'http://127.0.0.1:5000/api/research/inject',
-    'http://localhost:5000/api/research/inject',
-    'http://127.0.0.1:5000/api/memory_link',
-    'http://localhost:5000/api/memory_link'
-  ];
+  // These are two DIFFERENT endpoints, not four fallbacks for one: the old list
+  // tried /api/research/inject then /api/memory_link and returned whichever
+  // answered first, so the same payload could land in either store depending on
+  // timing. Pick the one that matches the payload and only vary the host.
+  const endpointPath =
+    data && data.type === 'selection' ? '/api/memory_link' : '/api/research/inject';
+  const hosts = ['http://127.0.0.1:5000', 'http://localhost:5000'];
+  const headers = await JesterAuth.jesterHeaders();
 
   let lastError = null;
-  for (const endpoint of endpoints) {
+  for (const host of hosts) {
     try {
-      const response = await fetch(endpoint, {
+      const response = await fetch(host + endpointPath, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify(data)
       });
+      if (response.status === 401) {
+        // Not a connectivity failure -- trying the other host would produce the
+        // identical 401 and then report a misleading "connection failed".
+        throw JesterAuth.jesterAuthError();
+      }
       if (response.ok) {
         const result = await response.json();
         console.log('[JESTER Memory Clip] Synced successfully:', result);
         return result;
       }
+      lastError = new Error(`JESTER responded ${response.status}`);
     } catch (err) {
+      if (err && err.jesterAuth) throw err;
       lastError = err;
     }
   }
   console.error('[JESTER Memory Clip] Connection failed:', lastError);
-  throw lastError || new Error("Failed to connect to JESTER server at port 5000");
+  throw lastError || new Error('Failed to connect to JESTER server at port 5000');
 }

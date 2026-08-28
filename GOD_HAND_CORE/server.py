@@ -8,6 +8,7 @@ import time
 import requests
 
 import graph_memory
+import jester_auth
 
 # Suppress GRPC warnings
 os.environ["GRPC_VERBOSITY"] = "ERROR"
@@ -130,10 +131,71 @@ app = Flask(__name__)
 CORS(app, origins=[
     re.compile(r"^http://(localhost|127\.0\.0\.1)(:\d+)?$"),
     re.compile(r"^chrome-extension://[a-p]+$"),
-])
+], allow_headers=["Content-Type", jester_auth.TOKEN_HEADER], supports_credentials=False)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger('SOURCE_CORE')
+
+# --- Authentication -------------------------------------------------------
+# Loopback binding keeps other machines out, but every process and browser
+# extension on this machine could still reach /api/sandbox (arbitrary Python),
+# /api/execute_tool (arbitrary subprocess, mouse and keyboard) and the full chat
+# history. Require a shared token that only filesystem-capable callers can read.
+API_TOKEN = jester_auth.load_token(create=True)
+AUTH_ENFORCED = jester_auth.auth_required()
+
+# Endpoints reachable without a token. Deliberately tiny: /api/pulse is the
+# liveness probe the launcher and clients poll before they have a token, and it
+# returns nothing sensitive (CPU, RAM, model name). Everything else -- including
+# read-only history, which is private conversation data -- requires the token.
+AUTH_EXEMPT_PATHS = frozenset({'/api/pulse'})
+
+
+@app.before_request
+def enforce_api_token():
+    # Preflight carries no credentials by design; flask-cors answers it.
+    if request.method == 'OPTIONS':
+        return None
+    if not AUTH_ENFORCED or not API_TOKEN:
+        return None
+    if not request.path.startswith('/api/') or request.path in AUTH_EXEMPT_PATHS:
+        return None
+
+    supplied = request.headers.get(jester_auth.TOKEN_HEADER)
+    if not supplied:
+        # EventSource cannot set headers. The React app sidesteps this because
+        # Vite's proxy injects the header server-side, but a direct SSE consumer
+        # has no alternative to the query string.
+        supplied = request.args.get(jester_auth.TOKEN_QUERY_PARAM)
+
+    if jester_auth.token_matches(supplied, API_TOKEN):
+        return None
+
+    logger.warning(
+        f'REJECTED UNAUTHENTICATED {request.method} {request.path} '
+        f'from {request.remote_addr} (origin={request.headers.get("Origin", "-")})'
+    )
+    return jsonify({
+        'error': 'UNAUTHORIZED',
+        'detail': (
+            f'Send the shared token in the {jester_auth.TOKEN_HEADER} header. '
+            f'It is stored at {jester_auth.TOKEN_FILE}.'
+        ),
+    }), 401
+
+
+if not AUTH_ENFORCED:
+    logger.warning(
+        'JESTER_REQUIRE_AUTH is off -- code-execution endpoints are open to '
+        'every process and browser extension on this machine.'
+    )
+elif not API_TOKEN:
+    logger.error(
+        'No API token could be loaded or created; authentication is INACTIVE. '
+        f'Check write access to {jester_auth.TOKEN_FILE}.'
+    )
+else:
+    logger.info(f'API AUTH ACTIVE. Token file: {jester_auth.TOKEN_FILE}')
 
 
 def get_swarm_data():
@@ -674,7 +736,8 @@ def chat_stream():
         data = request.json
         msg = data.get('message', '')
         
-        pill_type = data.get('tool_args', {}).get('pill_type', 'blue')
+        tool_args = data.get('tool_args') or {}
+        pill_type = tool_args.get('pill_type', 'blue')
         sys_prompt = 'You are JESTER V1000: THE GOD HAND. Mission: Break the simulation. '
         if msg == 'take_pill':
             msg = f'I choose the {pill_type} pill.'

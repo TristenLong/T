@@ -1,4 +1,4 @@
-/* global chrome */
+/* global chrome, JesterAuth */
 
 const extractBtn = document.getElementById('extractBtn');
 const errorMsg = document.getElementById('errorMsg');
@@ -6,6 +6,9 @@ const outputContainer = document.getElementById('outputContainer');
 const outputBox = document.getElementById('outputBox');
 const modelTag = document.getElementById('modelTag');
 const statusBadge = document.getElementById('statusBadge');
+const tokenInput = document.getElementById('tokenInput');
+const tokenState = document.getElementById('tokenState');
+const saveTokenBtn = document.getElementById('saveTokenBtn');
 
 function showError(msg) {
   errorMsg.textContent = msg;
@@ -94,3 +97,50 @@ function extractPageData() {
   const text = (document.body ? document.body.innerText : '').substring(0, 6000);
   return { title, url, text };
 }
+
+/*
+ * Token management.
+ *
+ * The backend requires an X-Jester-Token header on /api/* and an extension
+ * cannot read the token file off disk -- that is deliberate, it is what stops
+ * every other installed extension from calling /api/sandbox. So the user pastes
+ * it in once and chrome.storage.local keeps it.
+ *
+ * The value is never rendered back into the input; only whether one is set.
+ */
+async function refreshTokenState() {
+  const token = await JesterAuth.getJesterToken();
+  if (token) {
+    tokenState.textContent = '· SET';
+    tokenState.style.color = '#00ff66';
+    tokenInput.placeholder = '•••••••• (saved)';
+  } else {
+    tokenState.textContent = '· MISSING';
+    tokenState.style.color = '#ff8899';
+    tokenInput.placeholder = 'paste token';
+  }
+}
+
+saveTokenBtn.addEventListener('click', async () => {
+  const value = tokenInput.value.trim();
+  if (!value) {
+    showError('Paste the token from GOD_HAND_CORE/.jester_token first.');
+    return;
+  }
+  try {
+    await JesterAuth.setJesterToken(value);
+    tokenInput.value = '';
+    clearError();
+    statusBadge.textContent = 'TOKEN SAVED';
+    await refreshTokenState();
+    setTimeout(() => { statusBadge.textContent = 'READY'; }, 2000);
+  } catch (err) {
+    showError(`Could not save token: ${err.message}`);
+  }
+});
+
+tokenInput.addEventListener('keydown', event => {
+  if (event.key === 'Enter') saveTokenBtn.click();
+});
+
+refreshTokenState();

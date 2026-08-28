@@ -32,3 +32,22 @@ dist-ssr
 __pycache__/
 *.pyc
 *.zip
+
+# Shared secret for the local API (GOD_HAND_CORE/jester_auth.py). Generated on
+# first run, machine-local, and must never be committed -- committing it would
+# hand every clone the token that guards /api/sandbox.
+.jester_token
+
+# Local git worktrees. A worktree directory contains a .git *file*, which git
+# mistakes for a submodule and records as a gitlink (mode 160000). One was
+# committed that way, giving anyone who cloned this repo a submodule reference
+# pointing at a commit that only existed on the original machine.
+*.worktrees/
+.claude/worktrees/
+
+# Claude Code local state, including settings.local.json (machine-specific
+# permissions). Untracked but easy to sweep in with `git add -A`.
+.claude/
+
+# Atlassian CLI
+acli.exe

@@ -153,13 +153,23 @@ except Exception as e:
 
 # Utility Functions
 import requests
+
+try:
+    import jester_auth
+except ImportError:  # bot.py can be launched with a different sys.path
+    jester_auth = None
+
+
 def notify_frontend(event_type, message, payload=None):
     try:
+        # /api/internal/bot_event now requires the shared token; without it the
+        # server returns 401 and every bot event is silently dropped.
+        headers = jester_auth.auth_headers() if jester_auth else {}
         requests.post('http://127.0.0.1:5000/api/internal/bot_event', json={
             'event_type': event_type,
             'message': message,
             'payload': payload or {}
-        }, timeout=2)
+        }, headers=headers, timeout=2)
     except Exception:
         pass
 

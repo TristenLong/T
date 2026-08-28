@@ -1,5 +1,6 @@
 import asyncio
 import os
+import subprocess
 import sys
 
 from pydantic import BaseModel, Field
@@ -120,6 +121,16 @@ def start_visual_autopilot(objective: str) -> str:
     except Exception as e:
         return f"Error: {e}"
 
+def run_rovo_dev(prompt: str) -> str:
+    """Dispatches the Atlassian Rovo Dev CLI autonomous agent to execute complex coding or system upgrade tasks."""
+    try:
+        # Assuming acli.exe is in the project root relative to GOD_HAND_CORE
+        acli_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'acli.exe')
+        res = subprocess.run([acli_path, 'rovodev', 'run', prompt, '--yolo'], capture_output=True, text=True)
+        return f"Rovo Dev Output:\n{res.stdout}\n{res.stderr}"
+    except Exception as e:
+        return f"Rovo Dev Error: {e}"
+
 AVAILABLE_TOOLS = [
     execute_computer_use,
     dispatch_coder_swarm,
@@ -132,5 +143,6 @@ AVAILABLE_TOOLS = [
     analyze_screen,
     execute_python_sandbox,
     dispatch_mcp_swarm,
-    start_visual_autopilot
+    start_visual_autopilot,
+    run_rovo_dev
 ]

@@ -35,6 +35,32 @@
     }
     button:hover { background: #00ff41; color: #000; }
     #log { margin-top: 20px; font-size: 0.8rem; color: #008f11; white-space: pre-wrap; }
+    /* Token entry. The backend rejects /api/* without a shared secret, and an
+       extension cannot read it off disk, so the user pastes it in once. This
+       lives in the side panel because manifest.json sets no default_popup --
+       clicking the toolbar icon opens this panel, so it is the only surface the
+       user can actually reach. */
+    .auth {
+      margin-top: 20px;
+      border-top: 1px solid #008f11;
+      padding-top: 10px;
+    }
+    .auth label { font-size: 0.7rem; color: #008f11; letter-spacing: 1px; }
+    .auth-row { display: flex; gap: 6px; margin-top: 6px; }
+    .auth input {
+      flex: 1;
+      min-width: 0;
+      background: #000;
+      color: #00ff41;
+      border: 1px solid #008f11;
+      padding: 6px;
+      font-family: inherit;
+      font-size: 0.75rem;
+      box-sizing: border-box;
+    }
+    .auth input:focus { outline: none; border-color: #00ff41; }
+    .auth button { width: auto; flex: 0 0 auto; margin-top: 0; padding: 6px 10px; }
+    .auth-hint { font-size: 0.65rem; color: #045c0b; margin-top: 4px; word-break: break-all; }
   </style>
 </head>
 <body>
@@ -43,6 +69,17 @@
   <textarea id="prompt" placeholder="Command JESTER..."></textarea>
   <button id="sendBtn">EXECUTE</button>
   <div id="log"></div>
+  <div class="auth">
+    <label for="tokenInput">API TOKEN <span id="tokenState"></span></label>
+    <div class="auth-row">
+      <input id="tokenInput" type="password" autocomplete="off" spellcheck="false"
+             placeholder="paste token">
+      <button id="saveTokenBtn">SAVE</button>
+    </div>
+    <div class="auth-hint">From GOD_HAND_CORE/.jester_token</div>
+  </div>
+  <!-- jester-auth.js must load first: sidepanel.js calls JesterAuth at click time. -->
+  <script src="jester-auth.js"></script>
   <script src="sidepanel.js"></script>
 </body>
 </html>

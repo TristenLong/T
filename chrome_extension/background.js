@@ -1,4 +1,8 @@
-/* global chrome */
+/* global chrome, importScripts, JesterAuth */
+
+// Classic MV3 service worker (no "type": "module" in the manifest), so
+// importScripts is how the shared auth helper gets loaded.
+importScripts('jester-auth.js');
 
 chrome.runtime.onInstalled.addListener(() => {
   chrome.contextMenus.removeAll(() => {
@@ -55,12 +59,43 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   }
 });
 
-async function forwardToJester(payload) {
-  const endpoints = [
-    'http://127.0.0.1:5000/api/chat',
-    'http://localhost:5000/api/chat'
-  ];
+// The two entries in each list below are the SAME endpoint on two spellings of
+// the loopback host -- a genuine fallback, unlike the mixed-endpoint list this
+// used to share with browser_extension. Only the host varies.
+const JESTER_HOSTS = ['http://127.0.0.1:5000', 'http://localhost:5000'];
 
+async function postToJester(endpointPath, body) {
+  const headers = await JesterAuth.jesterHeaders();
+
+  let lastError = null;
+  for (const host of JESTER_HOSTS) {
+    try {
+      const r = await fetch(host + endpointPath, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(body)
+      });
+      if (r.status === 401) {
+        // Retrying the other host would produce an identical 401 and then
+        // report a misleading "failed to contact backend".
+        throw JesterAuth.jesterAuthError();
+      }
+      if (r.ok) {
+        return await r.json();
+      }
+      // The old code dropped non-ok responses on the floor, so a 500 from both
+      // hosts surfaced as "failed to contact JESTER backend" -- which sent the
+      // user hunting a connectivity problem that did not exist.
+      lastError = new Error(`JESTER responded ${r.status} on ${endpointPath}`);
+    } catch (e) {
+      if (e && e.jesterAuth) throw e;
+      lastError = e;
+    }
+  }
+  throw lastError || new Error('Failed to contact JESTER backend at localhost:5000');
+}
+
+async function forwardToJester(payload) {
   let messageText = '';
   if (typeof payload === 'string') {
     messageText = payload;
@@ -70,44 +105,9 @@ async function forwardToJester(payload) {
     messageText = JSON.stringify(payload);
   }
 
-  let lastError = null;
-  for (const endpoint of endpoints) {
-    try {
-      const r = await fetch(endpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: messageText })
-      });
-      if (r.ok) {
-        return await r.json();
-      }
-    } catch (e) {
-      lastError = e;
-    }
-  }
-  throw lastError || new Error("Failed to contact JESTER backend at localhost:5000");
+  return postToJester('/api/chat', { message: messageText });
 }
 
 async function forwardCommandToJester(toolId, cmd) {
-  const endpoints = [
-    'http://127.0.0.1:5000/api/execute_tool',
-    'http://localhost:5000/api/execute_tool'
-  ];
-
-  let lastError = null;
-  for (const endpoint of endpoints) {
-    try {
-      const r = await fetch(endpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tool_id: toolId, cmd: cmd })
-      });
-      if (r.ok) {
-        return await r.json();
-      }
-    } catch (e) {
-      lastError = e;
-    }
-  }
-  throw lastError || new Error("Failed to contact JESTER backend at localhost:5000");
+  return postToJester('/api/execute_tool', { tool_id: toolId, cmd: cmd });
 }
