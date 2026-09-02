@@ -505,6 +505,15 @@ function App() {
       desc: 'Build new code or fix an existing file (reads/writes the file, validates syntax)' 
     },
     { 
+      id: 'github_upgrade', 
+      label: 'GITHUB UPGRADE', 
+      category: 'SWARM',
+      hue: theme.cyan, 
+      icon: <RefreshCw size={16}/>, 
+      desc: 'Check origin/TristenLong for updates and pull the latest code (hard reset + restart)', 
+      customAction: executeGitHubUpgrade 
+    },
+    { 
       id: 'browser_swarm', 
       label: 'NAVIGATOR', 
       category: 'SWARM',
@@ -647,6 +656,45 @@ function App() {
   const filteredTools = activeCategory === 'ALL' 
     ? toolArsenal 
     : toolArsenal.filter(t => t.category === activeCategory);
+
+  const executeGitHubUpgrade = async () => {
+    setStatus('CHECKING_UPDATES...');
+    setResponse('> Checking github.com/TristenLong/T for updates...\n');
+    try {
+      const check = await fetch('/api/upgrade/check', { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+      const state = await check.json();
+      if (!state.ok) {
+        setResponse(`> Update check failed: ${state.error || 'UNKNOWN'}`);
+        speak("Update check failed.");
+        return;
+      }
+      if (!state.available) {
+        setResponse(`> Already up to date.\nRepo: ${state.remote_url || 'origin'}\nBranch: ${state.branch}\nCommit: ${(state.current || '').slice(0, 7)}`);
+        speak("Already up to date.");
+        return;
+      }
+      setResponse(`> Update available.\n  Branch: ${state.branch}\n  Local:  ${(state.current || '').slice(0, 7)}\n  Remote: ${(state.latest || '').slice(0, 7)}\n> Pulling latest code...\n`);
+      const apply = await fetch('/api/upgrade/apply', { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+      const done = await apply.json();
+      if (!done.ok) {
+        setResponse(`> Upgrade failed: ${done.error || 'UNKNOWN'}`);
+        speak("Upgrade failed.");
+        observe('TOOL', `github_upgrade -> FAILED: ${done.error}`);
+        return;
+      }
+      const msg = done.already_up_to_date
+        ? '> Already up to date.'
+        : `> Upgrade complete.\n  ${(done.from || '').slice(0, 7)} -> ${(done.to || '').slice(0, 7)}\n> RESTART the app so the new code takes effect.`;
+      setResponse(msg);
+      speak("Upgrade completed. Restart the application now.");
+      observe('TOOL', `github_upgrade -> ${done.to || 'OK'}`);
+    } catch (e) {
+      setResponse(`> Upgrade error: ${e.message}`);
+      speak("Upgrade error.");
+    } finally {
+      setStatus('THE_ONE_ONLINE');
+    }
+  };
 
   const executeToolItem = async (tool) => {
     setExecutingTool(tool.id);

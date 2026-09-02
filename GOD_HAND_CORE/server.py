@@ -791,6 +791,30 @@ def execute_tool():
         logger.error(f'EXECUTE_TOOL_ERROR: {str(e)}')
         return jsonify({'error': str(e)}), 500
 
+@app.route('/api/upgrade/check', methods=['POST'])
+def upgrade_check():
+    """Compare local code against the GitHub origin and report whether an update is available."""
+    try:
+        import github_upgrade
+        return jsonify(github_upgrade.check_for_updates())
+    except Exception as e:
+        return jsonify({'ok': False, 'error': str(e)}), 500
+
+@app.route('/api/upgrade/apply', methods=['POST'])
+def upgrade_apply():
+    """HARD-RESET the working tree to origin/<tracked branch>.
+
+    Warning: this discards local changes to tracked files (including runtime
+    DB state, which is tracked in this repo). Restart the app afterwards so
+    the new code (and the purged memory) actually takes effect.
+    """
+    try:
+        import github_upgrade
+        res = github_upgrade.do_upgrade()
+        return jsonify(res)
+    except Exception as e:
+        return jsonify({'ok': False, 'error': str(e)}), 500
+
 @app.route('/api/chat', methods=['POST'])
 def chat():
     try:
