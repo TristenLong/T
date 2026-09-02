@@ -657,7 +657,7 @@ function App() {
     ? toolArsenal 
     : toolArsenal.filter(t => t.category === activeCategory);
 
-  const executeGitHubUpgrade = async () => {
+  async function executeGitHubUpgrade() {
     setStatus('CHECKING_UPDATES...');
     setResponse('> Checking github.com/TristenLong/T for updates...\n');
     try {
