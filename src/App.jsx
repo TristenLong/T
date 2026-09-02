@@ -537,9 +537,18 @@ function App() {
       category: 'SYSTEM',
       hue: theme.blue, 
       icon: <Network size={16}/>, 
-      desc: 'Trigger external MCP servers (default: filesystem)', 
+      desc: 'Execute a tool on a registered MCP server by name (register via MCP SERVERS)', 
       cmd: 'list root directory via MCP',
       args: { command: 'npx', args: ['-y', '@modelcontextprotocol/server-filesystem', 'C:\\'], tool_name: 'list_directory', tool_args: { path: 'C:\\' } }
+    },
+    { 
+      id: 'mcp_manage', 
+      label: 'MCP SERVERS', 
+      category: 'SYSTEM',
+      hue: theme.blue, 
+      icon: <Network size={16}/>, 
+      desc: 'List registered MCP servers (spawn config kept out of chat history)', 
+      customAction: executeMCPManage 
     },
     { 
       id: 'sandbox_execute', 
@@ -695,6 +704,33 @@ function App() {
       setStatus('THE_ONE_ONLINE');
     }
   };
+
+  async function executeMCPManage() {
+    setStatus('EXECUTING_TOOL...');
+    setResponse('> Listing registered MCP servers...\n');
+    try {
+      const res = await fetch('/api/mcp/servers', { method: 'GET', headers: { 'Content-Type': 'application/json' } });
+      const data = await res.json();
+      if (!data.ok) {
+        setResponse(`> MCP status failed: ${data.error || 'UNKNOWN'}`);
+        return;
+      }
+      const servers = data.servers || [];
+      if (!servers.length) {
+        setResponse('> No MCP servers registered. Tell JESTER "register the filesystem MCP server" to add one.');
+        speak("No MCP servers registered yet.");
+        return;
+      }
+      const listing = servers.map(s => `- ${s.name}: ${s.command} ${(s.args || []).join(' ')}`).join('\n');
+      setResponse(`> Registered MCP servers:\n${listing}`);
+      speak(`${servers.length} MCP server${servers.length > 1 ? 's' : ''} registered.`);
+      observe('TOOL', `mcp_manage -> ${servers.length} servers`);
+    } catch (e) {
+      setResponse(`> MCP status error: ${e.message}`);
+    } finally {
+      setStatus('THE_ONE_ONLINE');
+    }
+  }
 
   const executeToolItem = async (tool) => {
     setExecutingTool(tool.id);

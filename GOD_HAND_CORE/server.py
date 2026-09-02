@@ -4,6 +4,7 @@ import re
 import socket
 import sqlite3
 import time
+import math
 
 import requests
 
@@ -325,6 +326,10 @@ def save_memory(role, content):
             # documents on *every* save -- twice per chat turn -- even though
             # nothing read the result until the next search.
             semantic_cache['dirty'] = True
+        # Feed background fact-mining (miko pattern) so user-stated facts land
+        # in the knowledge graph without blocking the chat turn.
+        if role == 'user':
+            _enqueue_fact_mining(content)
     except Exception as e:
         logger.error(f'SAVE_MEMORY ERROR: {e}')
 
@@ -355,6 +360,130 @@ def refresh_semantic_cache():
     except Exception as e:
         # Was a bare `pass`, which hid schema and sklearn errors entirely.
         logger.warning(f'SEMANTIC CACHE REFRESH FAILED: {e}')
+
+
+# --- BM25 lexical scoring (hybrid recall, silicondev-style) ---
+# TF-IDF cosine only is weak on conversational memory ("what did I name the
+# project?" vs an old doc saying "the project is called JESTER"). BM25 adds
+# term-frequency saturation + inverse-document-frequency, so short distinctive
+# tokens ("jester", "gemini", "api key") rank old related turns correctly even
+# when the query shares few exact words with the stored phrasing.
+def _bm25_tokens(text):
+    return re.findall(r"[a-z0-9']+", (text or "").lower())
+
+
+def _bm25_scores(query_tokens, docs):
+    """Pure-Python Okapi BM25 scores over the cached docs (k1=1.5, b=0.75)."""
+    N = len(docs)
+    if not N or not query_tokens:
+        return [0.0] * N
+    tokenized_docs = []
+    df = {}
+    for d in docs:
+        toks = _bm25_tokens(d)
+        tokenized_docs.append(toks)
+        for t in set(toks):
+            df[t] = df.get(t, 0) + 1
+    avgdl = sum(len(t) for t in tokenized_docs) / N
+    k1, b = 1.5, 0.75
+    idf = {}
+    for t in df:
+        idf[t] = max(0.0, abs(math.log((N - df[t] + 0.5) / (df[t] + 0.5) + 1)))
+    scores = []
+    for toks in tokenized_docs:
+        dl = len(toks)
+        tf_map = {}
+        for t in toks:
+            tf_map[t] = tf_map.get(t, 0) + 1
+        s = 0.0
+        for t in query_tokens:
+            f = tf_map.get(t, 0)
+            if f:
+                denom = f + k1 * (1 - b + b * dl / avgdl)
+                s += idf.get(t, 0) * (f * (k1 + 1)) / denom
+        scores.append(s)
+    return scores
+
+
+# --- Fact-mining worker (miko-style) ---
+_FACT_QUEUE = queue.Queue()
+_FACT_MINER_LOCK = threading.Lock()
+_FACT_MINER_LAST_RUN = [0.0]
+
+
+def _fact_miner_worker():
+    import learning_core
+    while True:
+        try:
+            cand = _FACT_QUEUE.get(timeout=30)
+        except queue.Empty:
+            continue
+        cand = (cand or '').strip()
+        if len(cand) < 24:
+            continue  # too short to carry a fact
+        # Facts are declarative. Questions ("what do you remember about me?",
+        # "who are you?", "are you working?") extract nothing but noise like
+        # `you -> remember -> me`, polluting the graph. Skip interrogatives.
+        if re.search(r'\b(what|who|when|where|why|how|which|can|could|do|does|did|is|are|will|would|should)\b.*\?', cand, re.IGNORECASE) or '?' in cand:
+            continue
+        with _FACT_MINER_LOCK:
+            now = time.time()
+            if now - _FACT_MINER_LAST_RUN[0] < 45:
+                continue  # rate-limited; skip, don't block the stream
+            _FACT_MINER_LAST_RUN[0] = now
+        try:
+            saved = learning_core.auto_extract_and_learn(cand)
+            if saved:
+                logger.info(f'FACT MINER: {" | ".join(saved)[:400]}')
+            else:
+                logger.debug('FACT MINER: no triplets extracted')
+        except Exception as e:
+            logger.warning(f'FACT MINER FAILED: {e}')
+
+
+def _enqueue_fact_mining(text):
+    """Non-blocking: drop facts to mine into the worker queue (miko pattern)."""
+    try:
+        _FACT_QUEUE.put((text or '')[:2000], timeout=0.2)
+    except queue.Full:
+        pass
+
+
+def _is_query_echo(query, doc):
+    """True when a past message is (near-)identical to the current query.
+
+    "what do you remember about me?" asked three turns ago must not be
+    "recalled" as context -- that is the pattern that made memory questions
+    echo themselves and then trigger the persona fallback.
+    """
+    q_toks = set(_bm25_tokens(query))
+    d_toks = set(_bm25_tokens(doc))
+    if not q_toks or not d_toks:
+        return False
+    overlap = len(q_toks & d_toks) / max(1, len(q_toks))
+    return overlap >= 0.6 and abs(len(q_toks) - len(d_toks)) <= 2
+
+
+def _hybrid_top(query, docs, top_k=3):
+    """Blend BM25 + TF-IDF cosine into one ranked cut, thresholded like before."""
+    if not docs:
+        return []
+    vectorizer = semantic_cache['vectorizer']
+    tfidf_docs = semantic_cache['tfidf_docs']
+    tfidf_query = vectorizer.transform([query])
+    cosine_sim = cosine_similarity(tfidf_query, tfidf_docs).flatten()
+    bm25_scores = _bm25_scores(_bm25_tokens(query), docs)
+    # Normalize both signals to [0,1] before blending, else the raw BM25
+    # magnitude dwarfs cosine and lexical matching dominates everything.
+    bm25_max = max(bm25_scores) if bm25_scores else 0.0
+    bm25_norm = [s / bm25_max if bm25_max else 0.0 for s in bm25_scores]
+    cos_max = float(cosine_sim.max()) if len(cosine_sim) else 0.0
+    cos_norm = [float(c) / cos_max if cos_max else 0.0 for c in cosine_sim]
+    combined = [0.6 * b + 0.4 * c for b, c in zip(bm25_norm, cos_norm)]
+    order = sorted(range(len(docs)), key=lambda i: combined[i], reverse=True)
+    hits = [docs[i] for i in order[:top_k] if combined[i] > 0.12]
+    return [d for d in hits if not _is_query_echo(query, d)]
+
 
 def load_memories(limit=10):
     try:
@@ -389,25 +518,29 @@ def semantic_search_memory(query, top_k=3):
             results = jester_collection.query(query_texts=[query], n_results=top_k)
             if results and results['documents'] and results['documents'][0]:
                 docs = results['documents'][0]
-                relevant = [d for d in docs if len(d) > 10]
+                relevant = [
+                    d for d in docs
+                    if len(d) > 10 and not _is_query_echo(query, d)
+                ]
                 if relevant:
                     return "RECALLED PAST CONTEXT: " + " | ".join(relevant)
             return ""
         else:
-            # TF-IDF Fallback -- rebuild here (lazily) if saves marked it stale.
+            # Hybrid recall: TF-IDF cosine blended with Okapi BM25. The old
+            # code used cosine alone, which failed on *conversational* phrasing
+            # ("what did I name the project?" never token-matches the stored
+            # "the project is JESTER" line). BM25's tf/idf saturation catches
+            # distinctive words the cosine score buried.
             if semantic_cache.get('dirty'):
                 refresh_semantic_cache()
             docs = semantic_cache['docs']
             if not docs or not semantic_cache['vectorizer']:
                 return ""
-            vectorizer = semantic_cache['vectorizer']
-            tfidf_docs = semantic_cache['tfidf_docs']
-            tfidf_query = vectorizer.transform([query])
-            cosine_sim = cosine_similarity(tfidf_query, tfidf_docs).flatten()
-            top_indices = cosine_sim.argsort()[-top_k:][::-1]
-            relevant = [docs[i] for i in top_indices if cosine_sim[i] > 0.1]
-            if relevant:
-                return "RECALLED PAST CONTEXT: " + " | ".join(relevant)
+            hits = _hybrid_top(query, docs, top_k)
+            if hits:
+                relevant = [h[0] for h in hits if len(h[0]) > 10]
+                if relevant:
+                    return "RECALLED PAST CONTEXT: " + " | ".join(relevant)
             return ""
     except Exception as e:
         logger.error(f"SEMANTIC SEARCH ERROR: {e}")
@@ -416,6 +549,31 @@ def semantic_search_memory(query, top_k=3):
 init_db()
 if not CHROMA_ENABLED:
     refresh_semantic_cache()
+
+
+_CODING_ACTION_RE = re.compile(
+    r'\b(fix|repair|debug|write|create|make|build|generate|implement|add|update|'
+    r'refactor|review|analyze|run|install|execute|removes?|fixes?)\b.{0,40}'
+    r'\b(code|script|function|python|javascript|jsx|bug|app|feature|file|program|'
+    r'class|module|import|regex|api|endpoint|ui|component|package|dependency)\b',
+    re.IGNORECASE,
+)
+_CODE_NOUN_ACTION_RE = re.compile(
+    r'\b(python|javascript|jsx|code|script|bug)\b.{0,40}'
+    r'\b(fix|repair|debug|write|create|build|make|solve|correct|update|run|execute)\b',
+    re.IGNORECASE,
+)
+
+
+def _requires_coding(msg):
+    """True only when the user is *asking* for coding work.
+
+    A bare mention of "python" or "code" ("my favourite language is Python",
+    "that code is slow") must NOT route into the agent loop -- that is what sent
+    declarative statements to coder_swarm and turned chit-chat into "repairs
+    complete." Require an action verb near a coding noun instead.
+    """
+    return bool(_CODING_ACTION_RE.search(msg or "")) or bool(_CODE_NOUN_ACTION_RE.search(msg or ""))
 
 
 def _to_router_messages(messages, sys_prompt):
@@ -428,13 +586,50 @@ def _to_router_messages(messages, sys_prompt):
     return msgs
 
 
+_MEMORY_INTENT_RE = re.compile(
+    r'\b(remember|recall|remembrances?|(what|who)[^.]*about[^.]*(me|yourself|us|you have learnt|you know)|who am i)\b',
+    re.IGNORECASE,
+)
+
+
+def _memory_recall_context():
+    """Pull genuinely stored facts (not a persona speech) for memory questions.
+
+    Returns a prompt-injection string containing known user facts, recent
+    memories, and knowledge-graph triplets, or '' if memory is empty.
+    """
+    parts = []
+    try:
+        import learning_core
+        import memory_core
+        recent = memory_core.retrieve_recent(10)
+        if recent and 'RECALL_ERROR' not in recent:
+            parts.append("RECENT MEMORIES:\n" + recent)
+        facts = learning_core.query_graph("")
+        if facts and 'NO_DATA_FOUND' not in facts and 'ERROR' not in facts:
+            parts.append("KNOWLEDGE GRAPH FACTS:\n" + facts)
+    except Exception as e:
+        logger.warning(f'MEMORY RECALL CONTEXT FAILED: {e}')
+    if not parts:
+        return ""
+    return "\n\nRECALLED FROM STORED MEMORY (quote these accurately, do not invent):\n" + "\n".join(parts)
+
+
 def _build_openai_tools(functions):
-    """Convert Tool Arsenal callables into OpenAI function-tool schemas."""
+    """Convert Tool Arsenal callables into OpenAI function-tool schemas.
+
+    The schema is what keeps weak local models honest: name, a full-docstring
+    description and per-parameter types/descriptions. A model that can't see
+    what a tool expects is far likelier to emit `{"name":"X","parameters{...}}`
+    by hand (see _salvage_embedded_tool_call) or invent bogus args.
+    """
     tools = []
     for fn in functions:
         sig = inspect.signature(fn)
         properties = {}
         required = []
+        doc = (fn.__doc__ or '').strip()
+        doc_lines = [ln.strip() for ln in doc.splitlines() if ln.strip()]
         for name, param in sig.parameters.items():
             if name in ('self', 'cls'):
                 continue
@@ -447,16 +642,28 @@ def _build_openai_tools(functions):
                 ptype = 'boolean'
             elif ann is dict:
                 ptype = 'object'
+            elif ann is list:
+                ptype = 'array'
             else:
                 ptype = 'string'
-            properties[name] = {'type': ptype}
+            prop = {'type': ptype}
+            # Per-parameter description: the docstring often reads
+            # `param name: what it means` on its own line.
+            marker = f'{name}:'
+            pdesc = next((ln.split(marker, 1)[1].strip()
+                          for ln in doc_lines if ln.startswith(marker)), '')
+            if pdesc:
+                prop['description'] = pdesc
+            properties[name] = prop
             if param.default is inspect.Parameter.empty:
                 required.append(name)
         tools.append({
             'type': 'function',
             'function': {
                 'name': fn.__name__,
-                'description': ((fn.__doc__ or '').strip().splitlines() or [''])[0],
+                # Full docstring (not just line 1) so the model learns what the
+                # tool does AND what its parameters mean before it calls it.
+                'description': doc or fn.__name__,
                 'parameters': {
                     'type': 'object',
                     'properties': properties,
@@ -467,7 +674,163 @@ def _build_openai_tools(functions):
     return tools
 
 
-def _agent_events(messages, sys_prompt, max_iters=2):
+# Some providers' models write tool calls as literal text instead of emitting
+# structured `tool_calls`. Left alone, that JSON gets streamed to the user and
+# saved to memory as a "reply". Salvage it -> an executable {name, arguments}.
+_DEGENERATE_CALL_RE = re.compile(
+    r'\{\s*"name"\s*:\s*"([A-Za-z_][A-Za-z0-9_]*)".{0,200}?"parameters"?\s*[":()]*\s*\{',
+    re.DOTALL,
+)
+
+
+def _salvage_embedded_tool_call(text):
+    """Extract a tool-call JSON the model wrote as plain text.
+
+    The model in the wild emits several malformed shapes:
+      {"name":"X","parameters":{...}}
+      {"name":"X","parameters{ "execute":true, ...}}        (no colon/quote)
+      {"name":"X","parameters){ "execute":true, ...}}        (stray paren)
+    Returns (name, args) when detectable, else (None, None).
+    """
+    m = _DEGENERATE_CALL_RE.search(text or "")
+    if not m:
+        # Parameterless shape only, e.g. {"name":"take_pill"}.
+        m2 = re.search(r'\{\s*"name"\s*:\s*"([A-Za-z_][A-Za-z0-9_]*)"\s*\}', text or "")
+        if m2:
+            return m2.group(1), {}
+        return None, None
+    name = m.group(1)
+    # Brace-match the arguments object that begins at m.end() so a nested
+    # quoted brace (e.g. a JSON-in-JSON string) is handled correctly. The
+    # regex consumed the opening '{', so treat it as depth 1 here.
+    depth = 1
+    args_end = None
+    for i in range(m.end(), min(m.end() + 1200, len(text))):
+        c = text[i]
+        if c == '{':
+            depth += 1
+        elif c == '}':
+            depth -= 1
+            if depth == 0:
+                args_end = i + 1
+                break
+    if args_end is None:
+        return None, None
+    body = text[m.end():args_end]
+    if not body.strip():
+        return name, {}
+    # Repair common tokens so json.loads can parse: fix unquoted keys like
+    # `execute:true` (missing opening quote) and broken `: ` after "parameters".
+    sane = re.sub(r'\b([A-Za-z_]\w*)\s*:', r'"\1":', body)
+    sane = re.sub(r'(\S)({|})', r'\1\2', sane)
+    sane = sane.replace('"\n"', '","').replace('"{ ', '{"').replace(' }"', '"}')
+    # Tolerate a trailing comma before }.
+    sane = re.sub(r',\s*}', '}', sane)
+    try:
+        built = json.loads(sane)
+    except (json.JSONDecodeError, ValueError):
+        # Fallback: pull simple key:"value" pairs out of the body.
+        built = dict(re.findall(r'"([A-Za-z_]\w*)"\s*:\s*"([^"]*)"', body))
+    if not isinstance(built, dict):
+        built = {}
+    return name, built
+
+
+def _yield_salvaged_call(name, args, msgs):
+    """Execute a salvaged tool call, mirroring the structured-call handler below."""
+    import server_tools
+    fn = getattr(server_tools, name, None)
+    if fn is None:
+        return [f"UNKNOWN TOOL: {name}"]
+    out, _ = _execute_tool_call(fn, name, args, msgs)
+    return [out]
+
+
+def _execute_tool_call(server_tools, name, args, msgs):
+    """Run one Tool Arsenal call with arg-tolerance; returns (out, ok).
+
+    Local models invent parameters or omit required ones; instead of dying on a
+    TypeError we drop unknown keys and synthesize missing required params from
+    the latest user message. `ok` is False on error so a caller can retry.
+    """
+    if server_tools is None:
+        return 'UNKNOWN TOOL', False
+    try:
+        sig = inspect.signature(server_tools)
+        params = set(sig.parameters)
+        val_args = {k: v for k, v in args.items() if k in params}
+        required_missing = [
+            p for p, prm in sig.parameters.items()
+            if prm.default is inspect.Parameter.empty and p not in val_args
+        ]
+        if required_missing:
+            last_user = next(
+                (m.get('content') for m in reversed(msgs)
+                 if m.get('role') == 'user' and m.get('content')),
+                ''
+            )
+            last_user = str(last_user)[:1500] or 'Perform the task.'
+            for p in required_missing:
+                val_args[p] = last_user
+        out = server_tools(**val_args) if val_args else server_tools()
+        return str(out), True
+    except TypeError as te:
+        return f'Error (bad arguments): {te}', False
+    except Exception as ex:
+        return f'Error: {ex}', False
+
+
+def _run_tool_round(server_tools, calls, msgs):
+    """Execute one batch of tool_calls, parallelizing independent calls.
+
+    JARVIS-style: a round can contain several calls; running them serially makes
+    a multi-tool plan crawl. ThreadPoolExecutor runs the safe subset in parallel
+    while preserving deterministic ordering for msgs history. Tools that spawn
+    their own IO (subprocess, asyncio.run) are fine on worker threads.
+    """
+    results = []
+    for c in calls:
+        name = c['function']['name']
+        try:
+            args = json.loads(c['function']['arguments'] or '{}')
+        except (json.JSONDecodeError, ValueError):
+            args = {}
+        if not isinstance(args, dict):
+            args = {}
+        results.append((c, name, args))
+    outputs = {}
+    if len(results) > 1:
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=min(4, len(results))) as pool:
+            def gen_pairs():
+                for c, name, args in results:
+                    fn = getattr(server_tools, name, None)
+                    yield fn, name, args, c
+            futs = {
+                pool.submit(_execute_tool_call, fn, name, args, msgs): c
+                for fn, name, args, c in gen_pairs()
+            }
+            for fut in futs:
+                try:
+                    out, ok = fut.result()
+                except Exception as ex:
+                    out, ok = f'Error: {ex}', False
+                c = futs[fut]
+                if c['function']['name'] is None or out == 'UNKNOWN TOOL: None':
+                    out = f"UNKNOWN TOOL: {c['function']['name']}"
+                outputs[c['id']] = out
+    else:
+        for c, name, args in results:
+            fn = getattr(server_tools, name, None)
+            if fn is None:
+                out = f'UNKNOWN TOOL: {name}'
+            else:
+                out, _ = _execute_tool_call(fn, name, args, msgs)
+            outputs[c['id']] = out
+    return outputs
+
+
+def _agent_events(messages, sys_prompt, max_iters=3):
     """Agentic fallback chat: let the LLM call Tool Arsenal functions.
 
     Yields dict events: {'text': str, 'model': str} for content and
@@ -505,7 +868,9 @@ def _agent_events(messages, sys_prompt, max_iters=2):
         f"'code X'/'build X'/'write X X'/'create X X'/'fix the bug in <path>'/'repair <path>'/'add feature to <path>' -> dispatch_coder_swarm (pass the full file path as `path` when the user names one, `execute=True` only if asked to run it); "
         f"Otherwise do NOT call a tool -- just answer the user's message directly. "
         f"Do NOT invent numbers; quote only what the tool returns. "
-        f"After at most one tool call, stop calling tools and give your answer immediately. "
+        f"After the tool returns, stop calling tools and give your answer immediately "
+        f"(a second corrective call is allowed only if the first tool FAILED -- retry "
+        f"with fixed arguments once, then answer). "
         f"Available tools: {tool_names}."
     )
     msgs[0] = {'role': 'system', 'content': str(msgs[0]['content']) + caller_note}
@@ -515,11 +880,35 @@ def _agent_events(messages, sys_prompt, max_iters=2):
             content, calls, model = llm_router.tool_completion(msgs, tools)
         except Exception as e:
             logger.warning(f'TOOL CALLING UNSUPPORTED, PLAIN STREAM FALLBACK: {e}')
-            for chunk, m in stream_completion(msgs):
-                yield {'text': chunk, 'model': m}
-            return
+            # Non-stream so a model that writes `{"name":...}` as text is
+            # salvaged below instead of leaking raw tool JSON to the user.
+            try:
+                content, model = llm_router.generate_completion_with_model(msgs)
+                calls = None
+            except Exception as f:
+                logger.warning(f'PLAIN FALLBACK ALSO FAILED: {f}')
+                yield {'text': f"[I could not reach the LLM: {e}]", 'model': 'NONE'}
+                return
         if content:
-            yield {'text': content, 'model': model}
+            # Some models write `{"name":"X","parameters":{...}}` as plain text
+            # instead of a structured tool_call. If the reply is dominated by an
+            # embedded call, execute it for real instead of echoing JSON to the
+            # user and persisting it as a fake "reply".
+            sname, sargs = _salvage_embedded_tool_call(content)
+            if sname is not None and not calls:
+                yield {'tool': {'name': sname, 'status': 'RUN'}}
+                outs = _yield_salvaged_call(sname, sargs, msgs)
+                out = str(outs[0]) if outs else ''
+                yield {'tool': {'name': sname, 'status': 'DONE', 'info': out[:400]}}
+                msgs.append({
+                    'role': 'assistant',
+                    'content': content or '',
+                })
+                msgs.append({'role': 'tool', 'tool_call_id': 'salvaged', 'name': sname, 'content': out[:3000]})
+                content = ''  # do not surface the raw JSON as a reply
+                continue
+            else:
+                yield {'text': content, 'model': model}
         if not calls:
             return
 
@@ -532,48 +921,14 @@ def _agent_events(messages, sys_prompt, max_iters=2):
                 for c in calls
             ],
         })
+        # Emit RUN for all calls in the round first so the UI shows the full
+        # plan, then execute (in parallel when the model returned several).
+        for c in calls:
+            yield {'tool': {'name': c['function']['name'], 'status': 'RUN'}}
+        outputs = _run_tool_round(server_tools, calls, msgs)
         for c in calls:
             name = c['function']['name']
-            try:
-                args = json.loads(c['function']['arguments'] or '{}')
-            except (json.JSONDecodeError, ValueError):
-                args = {}
-            if not isinstance(args, dict):
-                args = {}
-            yield {'tool': {'name': name, 'status': 'RUN'}}
-            fn = getattr(server_tools, name, None)
-            if fn is None:
-                out = f'UNKNOWN TOOL: {name}'
-            else:
-                # Small local models routinely invent parameters (e.g. action=)
-                # that the tool does not declare, or omit required ones (e.g.
-                # dispatch_coder_swarm's `prompt`). Only forward arg keys the
-                # callable actually accepts; for a missing required param,
-                # synthesize it from the latest user message so the call still
-                # does the right thing instead of dying on a TypeError.
-                try:
-                    sig = inspect.signature(fn)
-                    params = set(sig.parameters)
-                    val_args = {k: v for k, v in args.items() if k in params}
-                    required_missing = [
-                        p for p, prm in sig.parameters.items()
-                        if prm.default is inspect.Parameter.empty
-                        and p not in val_args
-                    ]
-                    if required_missing:
-                        last_user = next(
-                            (m.get('content') for m in reversed(msgs)
-                             if m.get('role') == 'user' and m.get('content')),
-                            ''
-                        )
-                        last_user = str(last_user)[:1500] or f'Perform the {name} task.'
-                        for p in required_missing:
-                            val_args[p] = last_user
-                    out = fn(**val_args) if val_args else fn()
-                except TypeError as te:
-                    out = f'Error (bad arguments for {name}): {te}'
-                except Exception as ex:
-                    out = f'Error: {ex}'
+            out = outputs.get(c['id'], 'Error: missing result')
             out = str(out)
             yield {'tool': {'name': name, 'status': 'DONE', 'info': out[:400]}}
             msgs.append({'role': 'tool', 'tool_call_id': c['id'], 'name': name, 'content': out[:3000]})
@@ -815,6 +1170,49 @@ def upgrade_apply():
     except Exception as e:
         return jsonify({'ok': False, 'error': str(e)}), 500
 
+@app.route('/api/mcp/servers', methods=['GET', 'POST'])
+def mcp_servers():
+    """Manage the named MCP server registry used by the mcp_execute tool.
+
+    GET lists registered servers. POST registers one with
+    {name, command, args}; the registry file keeps spawn argv out of the prompt
+    so the model calls servers by stable name only.
+    """
+    import server_tools
+    try:
+        if request.method == 'GET':
+            servers = server_tools._load_mcp_servers()
+            return jsonify({'ok': True, 'servers': servers})
+        data = request.json or {}
+        name = (data.get('name') or '').strip()
+        command = (data.get('command') or '').strip()
+        args = data.get('args') or []
+        if not name or not command:
+            return jsonify({'ok': False, 'error': 'name and command are required'}), 400
+        res = server_tools.register_mcp_server(name, command, args)
+        return jsonify({'ok': True, 'message': res})
+    except Exception as e:
+        return jsonify({'ok': False, 'error': str(e)}), 500
+
+
+@app.route('/api/mcp/list_tools', methods=['POST'])
+def mcp_list_tools():
+    """List tools exposed by a registered MCP server (spawns it once)."""
+    import server_tools
+    import mcp_client_core
+    try:
+        data = request.json or {}
+        name = (data.get('server') or '').strip()
+        servers = server_tools._load_mcp_servers()
+        match = next((s for s in servers if s.get('name') == name), None)
+        if not match:
+            return jsonify({'ok': False, 'error': f'UNKNOWN MCP SERVER: {name}'}), 404
+        listing = mcp_client_core.list_mcp_tools(match.get('command', ''), match.get('args', []))
+        return jsonify({'ok': True, 'listing': listing})
+    except Exception as e:
+        return jsonify({'ok': False, 'error': str(e)}), 500
+
+
 @app.route('/api/chat', methods=['POST'])
 def chat():
     try:
@@ -837,8 +1235,20 @@ def chat():
         
         # Inject Semantic Context
         recalled_context = semantic_search_memory(msg)
+        if not recalled_context and _MEMORY_INTENT_RE.search(msg or ""):
+            recalled_context = _memory_recall_context()
         if recalled_context:
             sys_prompt += f"\n\n{recalled_context}"
+        elif _MEMORY_INTENT_RE.search(msg or ""):
+            # No stored facts: the persona prompt otherwise overwhelms weak
+            # local models into inventing a theatrical history. Pin down the
+            # honest answer instead of a fictional backstory.
+            sys_prompt += (
+                "\n\nHARD INSTRUCTION: The user asked what you remember about them, "
+                "but you have NO stored facts. Answer briefly that you don't have "
+                "anything saved about them yet, and ask what you should remember. "
+                "Do NOT improvise a persona speech, do NOT claim memory you lack."
+            )
             
         reply = ''
         used_model = 'NONE'
@@ -848,9 +1258,10 @@ def chat():
         # preferred whenever it is available -- regardless of intent. The router
         # (Ollama -> OpenAI) is a tool-less fallback used when Gemini is absent
         # or fails.
-        coding_keywords = ['code', 'script', 'function', 'python', 'javascript', 'jsx', 'bug', 'fix']
-        requires_coding = any(k in msg.lower() for k in coding_keywords)
-        intent = 'CODE' if requires_coding else 'CHAT'
+        requires_coding = _requires_coding(msg)
+        # Same as chat_stream: coding requests MUST reach the tool loop or the
+        # model hallucinates fixes / emits tool JSON as prose that never runs.
+        run_tools = bool(data.get('force_tool') or data.get('tool_args')) or requires_coding
 
         # `openai_client` alone is the wrong availability test: the router serves
         # requests from a local Ollama daemon with no API key at all.
@@ -858,15 +1269,14 @@ def chat():
         if not gemini_client and not fallback_available:
             return jsonify({'error': 'NO_LLM_AVAILABLE'}), 500
 
-        force_tool = bool(data.get('force_tool') or data.get('tool_args'))
         fallback_payload = history + [{'role': 'user', 'parts': [{'text': msg}]}]
 
         # Plain chat goes straight to a tool-less fast completion (Puter ->
         # Ollama -> OpenAI). The agent loop is reserved for explicit action
         # requests, and even then only its safe tool subset is offered, so a
         # stray tool call can never type/press/click the real desktop.
-        if force_tool:
-            logger.info(f'ROUTING: {intent} INTENT -> AGENT LOOP (TOOLS ENABLED)')
+        if run_tools:
+            logger.info('ROUTING: run_tools -> AGENT LOOP (TOOLS ENABLED)')
             try:
                 reply, used_model = _agent_text(fallback_payload, sys_prompt)
             except Exception as e:
@@ -874,7 +1284,7 @@ def chat():
                 msgs = _to_router_messages(fallback_payload, sys_prompt)
                 reply, used_model = generate_completion_with_model(msgs)
         else:
-            logger.info(f'ROUTING: {intent} INTENT -> LLM ROUTER (FAST, NO TOOLS)')
+            logger.info('ROUTING: plain chat -> LLM ROUTER (FAST, NO TOOLS)')
             msgs = _to_router_messages(fallback_payload, sys_prompt)
             reply, used_model = generate_completion_with_model(msgs)
 
@@ -967,14 +1377,31 @@ def chat_stream():
         
         history = load_memories()
         recalled_context = semantic_search_memory(msg)
+        if not recalled_context and _MEMORY_INTENT_RE.search(msg or ""):
+            # "What do you remember about me?" needs real stored facts, and
+            # TF-IDF keyword search rarely matches that phrasing. Inject actual
+            # memories / knowledge-graph triplets instead of a persona speech.
+            recalled_context = _memory_recall_context()
         if recalled_context:
             sys_prompt += f"\n\n{recalled_context}"
+        elif _MEMORY_INTENT_RE.search(msg or ""):
+            # Same dry-memory guard as /api/chat: empty store means the model
+            # must say so, not spin a fictional backstory.
+            sys_prompt += (
+                "\n\nHARD INSTRUCTION: The user asked what you remember about them, "
+                "but you have NO stored facts. Answer briefly that you don't have "
+                "anything saved about them yet, and ask what you should remember. "
+                "Do NOT improvise a persona speech, do NOT claim memory you lack."
+            )
 
         save_memory('user', msg)
         
-        coding_keywords = ['code', 'script', 'function', 'python', 'javascript', 'jsx', 'bug', 'fix']
-        requires_coding = any(k in msg.lower() for k in coding_keywords)
-        intent = 'CODE' if requires_coding else 'CHAT'
+        requires_coding = _requires_coding(msg)
+        # A coding request MUST run through the tool loop: without tools the
+        # model either hallucinates "it now works" or writes its tool call as
+        # JSON prose that never executes. force_tool from the frontend already
+        # covers most action words; mirror that intent server-side too.
+        run_tools = bool(force_tool) or requires_coding
         fallback_payload = history + [{'role': 'user', 'parts': [{'text': msg}]}]
         # Probe once here rather than inside the generator: by the time the
         # generator runs, the response headers are already sent and a 500 is no
@@ -995,8 +1422,8 @@ def chat_stream():
             # tool loop, both of which made every reply crawl. The agent loop
             # (Tool Arsenal) is reserved for explicit actions so a simple
             # question no longer burns LLM round-trips on tool decisions.
-            if force_tool:
-                logger.info('STREAM ROUTING: force_tool -> AGENT LOOP (TOOLS ENABLED)')
+            if run_tools:
+                logger.info('STREAM ROUTING: run_tools -> AGENT LOOP (TOOLS ENABLED)')
                 try:
                     for ev in _agent_events(fallback_payload, sys_prompt):
                         if 'text' in ev:
@@ -1287,6 +1714,7 @@ def bot_event():
         return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
+    threading.Thread(target=_fact_miner_worker, name='fact-miner', daemon=True).start()
     # Was host='0.0.0.0', which published every endpoint below -- including the
     # unauthenticated /api/sandbox (arbitrary Python), /api/execute_tool
     # (arbitrary subprocesses via mcp_execute) and computer_use (mouse/keyboard

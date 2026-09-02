@@ -51,3 +51,10 @@ __pycache__/
 
 # Atlassian CLI
 acli.exe
+
+# JESTER runtime config / local artifacts (machine-local, not for clones)
+GOD_HAND_CORE/mcp_servers.json
+*.err
+jester_ai_test.html
+public/puter_probe.html
+test_puter.mjs

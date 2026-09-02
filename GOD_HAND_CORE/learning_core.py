@@ -18,10 +18,23 @@ def init_db():
 
 def add_fact(sub, pred, obj):
     try:
+        # Reject garbage triplets extracted from questions/echoes: facts should
+        # look like (subject, predicate, object) with real content, not
+        # `you -> remember -> me` or single-letter tokens.
+        if not sub or not pred or not obj:
+            return "FACT_SKIPPED_EMPTY"
+        dirty = {'you', 'me', 'i', 'what', 'who', 'the', 'a', 'an', 'remember',
+                 'recall', 'about', 'are', 'is', 'your', 'my', 'do', 'did'}
+        if {sub.strip().lower(), pred.strip().lower(), obj.strip().lower()} & dirty:
+            return "FACT_SKIPPED_NOISE"
+        if len(sub.strip()) < 2 or len(obj.strip()) < 2 or len(pred.strip()) < 2:
+            return "FACT_SKIPPED_TOO_SHORT"
         conn = sqlite3.connect(DB_FILE)
         c = conn.cursor()
         c.execute("SELECT id FROM knowledge_graph WHERE subject=? AND predicate=? AND object=?", (sub, pred, obj))
-        if c.fetchone(): return "FACT_EXISTS"
+        if c.fetchone():
+            conn.close()
+            return "FACT_EXISTS"
         
         c.execute("INSERT INTO knowledge_graph (subject, predicate, object) VALUES (?, ?, ?)", (sub, pred, obj))
         conn.commit()

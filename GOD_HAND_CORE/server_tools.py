@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 import subprocess
 import sys
@@ -258,6 +259,53 @@ def list_apps(filter: str = "") -> str:
     listing = "\n".join(f"- {n}" for n in names)
     return f"Installed apps ({len(names)} shown):\n{listing}"
 
+# --- Named MCP server registry (Jarvis/Miko management surface) ---
+# MCP servers in bot.py were spawned ad-hoc per request from `command`/`args`
+# passed by the caller. Registering servers here gives the model (and the UI) a
+# stable name to call into, and keeps the precise spawn argv out of the prompt.
+_MCP_REGISTRY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'mcp_servers.json')
+
+
+def _load_mcp_servers() -> list:
+    try:
+        with open(_MCP_REGISTRY_FILE, 'r', encoding='utf-8') as fh:
+            data = json.load(fh)
+        return data if isinstance(data, list) else []
+    except (OSError, ValueError):
+        return []
+
+
+def register_mcp_server(name: str, command: str, args: list) -> str:
+    servers = _load_mcp_servers()
+    servers = [s for s in servers if s.get('name') != name]
+    servers.append({'name': name, 'command': command, 'args': list(args or [])})
+    with open(_MCP_REGISTRY_FILE, 'w', encoding='utf-8') as fh:
+        json.dump(servers, fh, indent=2)
+    return f"MCP server '{name}' registered."
+
+
+def list_mcp_servers() -> str:
+    servers = _load_mcp_servers()
+    if not servers:
+        return "No MCP servers registered."
+    return "\n".join(f"- {s.get('name')}: {s.get('command')} {' '.join(s.get('args', []))}".rstrip() for s in servers)
+
+
+def mcp_execute(server: str, tool_name: str, tool_args: dict | None = None) -> str:
+    """Execute a tool on a registered MCP server. `server` is the registered name (see list_mcp_servers)."""
+    import mcp_client_core
+    servers = _load_mcp_servers()
+    match = next((s for s in servers if s.get('name') == server), None)
+    if not match:
+        return f"UNKNOWN MCP SERVER: {server} (registered: {', '.join(s.get('name', '?') for s in servers) or 'none'})"
+    return mcp_client_core.run_mcp_tool(
+        match.get('command', 'npx'),
+        match.get('args', []),
+        tool_name,
+        dict(tool_args or {}),
+    )
+
+
 AVAILABLE_TOOLS = [
     execute_computer_use,
     dispatch_coder_swarm,
@@ -276,4 +324,7 @@ AVAILABLE_TOOLS = [
     search_web,
     diagnostics_report,
     list_apps,
+    query_knowledge_graph,
+    mcp_execute,
+    list_mcp_servers,
 ]
