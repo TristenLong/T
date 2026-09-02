@@ -43,9 +43,9 @@ def self_heal_packages():
 def test_openai_connection():
     try:
         from openai import OpenAI
-        client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
+        client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'), base_url=os.getenv('OPENAI_BASE_URL') or None)
         response = client.chat.completions.create(
-            model="gpt-4o",
+            model=os.getenv('JESTER_OPENAI_MODEL', 'gpt-4o'),
             messages=[{"role": "user", "content": "PING"}],
             max_tokens=5
         )
@@ -54,7 +54,8 @@ def test_openai_connection():
         return False, str(e)
 
 def get_system_report():
-    load_dotenv(override=True)
+    ROOT_ENV = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), '.env')
+    load_dotenv(ROOT_ENV, override=True)
     report = []
     
     # 1. Internet

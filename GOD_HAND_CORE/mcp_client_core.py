@@ -25,6 +25,18 @@ def _mcp_env():
     return env
 
 
+def _spawn_command(command: str, args: list) -> list:
+    """Return a spawnable argv, routing bare .cmd/.ps1 shims through cmd.exe on
+    Windows so `npx`-style commands are not a FileNotFoundError / bad win32 exe."""
+    if os.name != 'nt':
+        return [command] + args
+    bare = os.path.basename(command)
+    is_absolute_exe = os.path.isabs(command) and command.lower().endswith(('.exe', '.bat', '.cmd', '.ps1'))
+    if not is_absolute_exe and (bare == 'npx' or bare == 'npm' or not os.path.splitext(bare)[1]):
+        return ['cmd.exe', '/c', command] + args
+    return [command] + args
+
+
 def run_mcp_tool(command: str, args: list, tool_name: str, tool_args: dict) -> str:
     """
     Synchronous wrapper to launch an MCP server, connect via stdio, execute a single tool, and return the result.
@@ -40,9 +52,10 @@ def run_mcp_tool(command: str, args: list, tool_name: str, tool_args: dict) -> s
         return f"MCP_ERROR: {str(e)}"
 
 async def _async_run_mcp_tool(command: str, args: list, tool_name: str, tool_args: dict) -> str:
+    argv = _spawn_command(command, args)
     server_params = StdioServerParameters(
-        command=command,
-        args=args,
+        command=argv[0],
+        args=argv[1:],
         env=_mcp_env()
     )
     
@@ -62,8 +75,11 @@ async def _async_run_mcp_tool(command: str, args: list, tool_name: str, tool_arg
                 # Execute tool
                 result = await session.call_tool(tool_name, arguments=tool_args)
                 
-                # Format result
-                if result.isError:
+                # Format result (older SDKs used isError, new ones is_error)
+                is_err = getattr(result, 'is_error', None)
+                if is_err is None:
+                    is_err = getattr(result, 'isError', False)
+                if is_err:
                     return f"MCP_TOOL_ERROR: {result.content}"
                 
                 # Return text content
@@ -82,7 +98,8 @@ def list_mcp_tools(command: str, args: list) -> str:
         return f"MCP_ERROR: {str(e)}"
 
 async def _async_list_mcp_tools(command: str, args: list) -> str:
-    server_params = StdioServerParameters(command=command, args=args, env=_mcp_env())
+    argv = _spawn_command(command, args)
+    server_params = StdioServerParameters(command=argv[0], args=argv[1:], env=_mcp_env())
     
     try:
         async with stdio_client(server_params) as (read, write):

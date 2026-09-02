@@ -39,7 +39,7 @@ def analyze_and_extract():
 
         if not raw_text and OPENAI_API_KEY:
             try:
-                client = OpenAI(api_key=OPENAI_API_KEY)
+                client = OpenAI(api_key=OPENAI_API_KEY, base_url=os.getenv("OPENAI_BASE_URL") or None)
                 b64 = base64.b64encode(img_bytes).decode("utf-8")
                 response = client.chat.completions.create(model="gpt-4o", messages=[
                     {"role": "user", "content": [{"type": "text", "text": prompt}, {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}}]}

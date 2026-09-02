@@ -13,6 +13,7 @@ import jester_auth
 # Suppress GRPC warnings
 os.environ["GRPC_VERBOSITY"] = "ERROR"
 import asyncio
+import inspect
 import json
 import random
 import threading
@@ -233,7 +234,7 @@ if GEMINI_API_KEY:
 
 if OPENAI_API_KEY:
     try:
-        openai_client = OpenAI(api_key=OPENAI_API_KEY)
+        openai_client = OpenAI(api_key=OPENAI_API_KEY, base_url=os.getenv("OPENAI_BASE_URL") or None)
         logger.info(f'OPENAI CLIENT INITIALIZED. MODEL: {OPENAI_MODEL}')
     except Exception as e:
         logger.error(f'OPENAI INIT FAILED: {str(e)}')
@@ -244,15 +245,31 @@ def active_model_name():
 
     Status endpoints used to report `PRIMARY_MODEL if gemini_client else
     OPENAI_MODEL`, which showed "gpt-4o" on an Ollama-only install that never
-    touches OpenAI. The Ollama probe is cached, so this is cheap to call.
+    touches OpenAI, and "gemini-2.5-flash" when a dead/exhausted key was present
+    even after the user armed Puter. Puter is what the CONNECT PUTER flow arms,
+    so an armed Puter backend is reported as the active model first. The Ollama
+    probe is cached, so this is cheap to call.
     """
-    if gemini_client:
-        return PRIMARY_MODEL
+    import llm_router
+    if llm_router.puter_client:
+        return f"puter:{llm_router.PUTER_MODEL}"
     if llm_router_ollama_available():
         return OLLAMA_MODEL
+    if gemini_client:
+        return PRIMARY_MODEL
     if openai_client:
         return OPENAI_MODEL
     return 'OFFLINE'
+
+
+def llm_router_puter_armed():
+    import llm_router
+    return bool(getattr(llm_router, 'puter_client', None))
+
+
+def llm_router_puter_model():
+    import llm_router
+    return getattr(llm_router, 'PUTER_MODEL', None) or 'z-ai/glm-5.3'
 
 # --- Memory Modules ---
 try:
@@ -411,6 +428,199 @@ def _to_router_messages(messages, sys_prompt):
     return msgs
 
 
+def _build_openai_tools(functions):
+    """Convert Tool Arsenal callables into OpenAI function-tool schemas."""
+    tools = []
+    for fn in functions:
+        sig = inspect.signature(fn)
+        properties = {}
+        required = []
+        for name, param in sig.parameters.items():
+            if name in ('self', 'cls'):
+                continue
+            ann = param.annotation
+            if ann is int:
+                ptype = 'integer'
+            elif ann is float:
+                ptype = 'number'
+            elif ann is bool:
+                ptype = 'boolean'
+            elif ann is dict:
+                ptype = 'object'
+            else:
+                ptype = 'string'
+            properties[name] = {'type': ptype}
+            if param.default is inspect.Parameter.empty:
+                required.append(name)
+        tools.append({
+            'type': 'function',
+            'function': {
+                'name': fn.__name__,
+                'description': ((fn.__doc__ or '').strip().splitlines() or [''])[0],
+                'parameters': {
+                    'type': 'object',
+                    'properties': properties,
+                    'required': required,
+                },
+            },
+        })
+    return tools
+
+
+def _agent_events(messages, sys_prompt, max_iters=2):
+    """Agentic fallback chat: let the LLM call Tool Arsenal functions.
+
+    Yields dict events: {'text': str, 'model': str} for content and
+    {'tool': {'name', 'status', 'info'}} for tool activity. Degrades to a
+    plain streamed reply when the active provider cannot do tool-calling.
+
+    ONLY the safe subset is offered to the model. Local 3B models cannot be
+    trusted with keystroke/mouse/code tools (system_control, computer_use,
+    sandbox): they have been observed calling them for unrelated questions,
+    which drives the real keyboard and mouse. Those stay Arsenal-only.
+    """
+    import server_tools
+    import llm_router
+
+    safe_tools = [
+        fn for fn in server_tools.AVAILABLE_TOOLS
+        if fn.__name__ not in {
+            'system_control', 'execute_computer_use', 'start_visual_autopilot',
+            'execute_python_sandbox', 'dispatch_browser_swarm',
+            'analyze_screen', 'dispatch_mcp_swarm', 'run_rovo_dev', 'optimize_system',
+        }
+    ]
+    msgs = _to_router_messages(messages, sys_prompt)
+    tools = _build_openai_tools(safe_tools)
+    tool_names = ", ".join(t['function']['name'] for t in tools)
+    caller_note = (
+        f"\n\nYou run on the God Hand command deck and HAVE working tools at your disposal, so never claim otherwise. "
+        f"When the user asks you to ACT, call the matching tool via function calling, then answer from its real result. "
+        f"Choose the most direct tool: "
+        f"'open X'/'launch X'/'start X' -> open_app_or_url; "
+        f"'find X'/'what apps'/'list installed apps'/'installed software' -> list_apps (pass the app name as filter if given); "
+        f"'search ...'/'look up' -> search_web or conduct_deep_research; "
+        f"'diagnostics'/'run system status'/'health check'/'test tools'/'fix my setup' -> diagnostics_report; "
+        f"'reddit X'/'subreddit X' -> check_reddit; "
+        f"'code X'/'build X'/'write X X'/'create X X'/'fix the bug in <path>'/'repair <path>'/'add feature to <path>' -> dispatch_coder_swarm (pass the full file path as `path` when the user names one, `execute=True` only if asked to run it); "
+        f"Otherwise do NOT call a tool -- just answer the user's message directly. "
+        f"Do NOT invent numbers; quote only what the tool returns. "
+        f"After at most one tool call, stop calling tools and give your answer immediately. "
+        f"Available tools: {tool_names}."
+    )
+    msgs[0] = {'role': 'system', 'content': str(msgs[0]['content']) + caller_note}
+
+    for _ in range(int(max_iters)):
+        try:
+            content, calls, model = llm_router.tool_completion(msgs, tools)
+        except Exception as e:
+            logger.warning(f'TOOL CALLING UNSUPPORTED, PLAIN STREAM FALLBACK: {e}')
+            for chunk, m in stream_completion(msgs):
+                yield {'text': chunk, 'model': m}
+            return
+        if content:
+            yield {'text': content, 'model': model}
+        if not calls:
+            return
+
+        msgs.append({
+            'role': 'assistant',
+            'content': content or '',
+            'tool_calls': [
+                {'id': c['id'], 'type': 'function',
+                 'function': {'name': c['function']['name'], 'arguments': c['function']['arguments']}}
+                for c in calls
+            ],
+        })
+        for c in calls:
+            name = c['function']['name']
+            try:
+                args = json.loads(c['function']['arguments'] or '{}')
+            except (json.JSONDecodeError, ValueError):
+                args = {}
+            if not isinstance(args, dict):
+                args = {}
+            yield {'tool': {'name': name, 'status': 'RUN'}}
+            fn = getattr(server_tools, name, None)
+            if fn is None:
+                out = f'UNKNOWN TOOL: {name}'
+            else:
+                # Small local models routinely invent parameters (e.g. action=)
+                # that the tool does not declare, or omit required ones (e.g.
+                # dispatch_coder_swarm's `prompt`). Only forward arg keys the
+                # callable actually accepts; for a missing required param,
+                # synthesize it from the latest user message so the call still
+                # does the right thing instead of dying on a TypeError.
+                try:
+                    sig = inspect.signature(fn)
+                    params = set(sig.parameters)
+                    val_args = {k: v for k, v in args.items() if k in params}
+                    required_missing = [
+                        p for p, prm in sig.parameters.items()
+                        if prm.default is inspect.Parameter.empty
+                        and p not in val_args
+                    ]
+                    if required_missing:
+                        last_user = next(
+                            (m.get('content') for m in reversed(msgs)
+                             if m.get('role') == 'user' and m.get('content')),
+                            ''
+                        )
+                        last_user = str(last_user)[:1500] or f'Perform the {name} task.'
+                        for p in required_missing:
+                            val_args[p] = last_user
+                    out = fn(**val_args) if val_args else fn()
+                except TypeError as te:
+                    out = f'Error (bad arguments for {name}): {te}'
+                except Exception as ex:
+                    out = f'Error: {ex}'
+            out = str(out)
+            yield {'tool': {'name': name, 'status': 'DONE', 'info': out[:400]}}
+            msgs.append({'role': 'tool', 'tool_call_id': c['id'], 'name': name, 'content': out[:3000]})
+
+    # The model kept calling tools without answering — force a final
+    # summarizing pass so we never return empty-handed.
+    msgs.append({
+        'role': 'user',
+        'content': 'You have used all your tool steps. Now summarize the tool results above and give your final answer to the user. Do not call any more tools.'
+    })
+    try:
+        final_text, model = llm_router.generate_completion_with_model(msgs)
+        yield {'text': final_text, 'model': model}
+    except Exception as e:
+        logger.error(f'FORCED SUMMARIZATION PASS FAILED: {e}')
+        yield {'text': '[Tools completed, but the final answer failed to generate. Try again or rephrase.]', 'model': 'NONE'}
+
+
+def _agent_text(messages, sys_prompt, max_iters=3):
+    """Non-streaming agentic completion. Returns (text, model_name)."""
+    full = []
+    model = 'NONE'
+    for ev in _agent_events(messages, sys_prompt, max_iters):
+        if 'text' in ev:
+            full.append(ev['text'])
+            model = ev['model']
+    return ''.join(full), model
+
+
+def _is_quota_exhausted(e):
+    """True when a Gemini error is a 429 quota/rate-limit, which backoff can't fix.
+
+    Skipping the retry sleep here is what lets an exhausted free tier fall through
+    to Puter/OpenAI quickly instead of stalling each request for several seconds.
+    """
+    code = getattr(e, 'status_code', None)
+    if code is None:
+        code = getattr(e, 'code', None)
+    if code is not None:
+        try:
+            return int(code) == 429
+        except (TypeError, ValueError):
+            pass
+    msg = str(e)
+    return 'RESOURCE_EXHAUSTED' in msg or '429' in msg or 'quotaExceeded' in msg
+
+
 def generate_fallback_response(messages, sys_prompt, max_retries=3):
     """Non-Gemini completion via the LLM router. Returns (text, model_name).
 
@@ -422,7 +632,7 @@ def generate_fallback_response(messages, sys_prompt, max_retries=3):
     """
     msgs = _to_router_messages(messages, sys_prompt)
 
-    for attempt in range(max_retries):
+    for attempt in range(max(1, max_retries)):
         try:
             return generate_completion_with_model(msgs)
         except Exception as e:
@@ -433,6 +643,7 @@ def generate_fallback_response(messages, sys_prompt, max_retries=3):
             else:
                 logger.error(f'OLLAMA/OPENAI ERROR: {e}')
                 raise
+    raise RuntimeError("Fallback response failed")
 
 def generate_gemini_response(sys_prompt, history, msg, max_retries=3):
     for attempt in range(max_retries):
@@ -451,6 +662,9 @@ def generate_gemini_response(sys_prompt, history, msg, max_retries=3):
             )
             return chat.send_message(msg).text
         except Exception as e:
+            if _is_quota_exhausted(e):
+                logger.error(f'GEMINI QUOTA EXHAUSTED, FALLING THROUGH: {e}')
+                raise e
             if attempt < max_retries - 1:
                 wait_time = (2 ** attempt) + random.uniform(0, 1)
                 logger.warning(f"GEMINI API RATE LIMIT/ERROR (Attempt {attempt+1}): {e}. Retrying in {wait_time:.2f}s...")
@@ -476,130 +690,102 @@ def api_sandbox():
     result = sandbox_core.execute_python_code(code)
     return jsonify(result)
 
+@app.route('/api/ai_state', methods=['GET', 'POST'])
+def api_ai_state():
+    """Report (and optionally probe) the backend's AI provider state WITHOUT
+    exposing the actual token. probe=1 fires a $0 PUT-request against the same
+    OpenAI-compatible endpoint the Tool Arsenal uses, so a failed tool can be
+    diagnosed as 'provider dead' vs 'never armed' without leaking the key.
+    """
+    import llm_router
+    openai_key = os.environ.get('OPENAI_API_KEY', '')
+    base = os.environ.get('OPENAI_BASE_URL', '')
+    model = os.environ.get('JESTER_OPENAI_MODEL', '')
+    armed = bool(openai_key) and bool(base)
+    state = {
+        'armed': armed,
+        'providers': {
+            'puter_backend': bool(llm_router.puter_client),
+            'openai_key': bool(openai_key),
+            'openai_base': base or '(default api.openai.com)',
+            'is_puter': 'puter' in base,
+            'model': model or os.getenv('JESTER_PRIMARY_LLM'),
+        },
+        'is_puter': 'puter' in base,
+    }
+    do_probe = (request.json or {}).get('probe', False) if request.method == 'POST' else False
+    if do_probe and openai_key:
+        try:
+            from openai import OpenAI
+            probe = OpenAI(api_key=openai_key, base_url=base)
+            resp = probe.chat.completions.create(
+                model=model or 'gpt-4o',
+                messages=[{'role': 'user', 'content': 'ping'}],
+                max_tokens=5,
+            )
+            state['probe'] = {'ok': True, 'reply': (resp.choices[0].message.content or '')[:60]}
+        except Exception as e:
+            state['probe'] = {'ok': False, 'error': str(e)[:160]}
+    elif do_probe:
+        state['probe'] = {'ok': False, 'error': 'NOT_ARMED'}
+    return jsonify(state)
+
 @app.route('/api/execute_tool', methods=['POST'])
 def execute_tool():
+    """Kill-switch-safe single dispatch for the Arsenal buttons.
+
+    Every toolbar tool_id maps to exactly one server_tools function (or a thin
+    arg adapter). All real work lives in server_tools so there is one
+    implementation per capability instead of a chain of duplicated branches.
+    """
     try:
         import server_tools
-        
+
         data = request.json
         tool_id = data.get('tool_id')
         cmd = data.get('cmd', '')
         args = data.get('args') or {}
-        
+
+        import re
+
+        def subreddit_from(text):
+            m = re.search(r'r/(\w+)', text or '')
+            return m.group(1) if m else (text or '').strip()
+
         result = "Action triggered."
-        
-        if tool_id == 'coder_swarm':
-            try:
-                import coder_core
-                coder = coder_core.CoderCore(None)
-                import asyncio
-                result = asyncio.run(coder.run_coding_task(cmd))
-            except Exception as e:
-                result = f"Error: {e}"
-        elif tool_id == 'computer_use':
-            try:
-                import computer_use
-                action = args.get('action', 'click')
-                result = computer_use.execute_computer_action(action, args)
-            except Exception as e:
-                result = f"Error: {e}"
-        elif tool_id == 'vision_screen':
-            try:
-                import vision_core
-                vision = vision_core.VisionCore()
-                # Simulate analyze_screen using existing methods
-                img = vision.capture_screen()
-                text = vision.extract_text()
-                result = f"Screen captured. Extracted text preview: {text[:100]}..."
-            except Exception as e:
-                result = f"Error: {e}"
-        elif tool_id == 'deep_research':
-            try:
-                import research_core
-                result = research_core.deep_research(cmd)
-            except Exception as e:
-                result = f"Error: {e}"
-        elif tool_id == 'sys_optimize':
-            try:
-                import system_core
-                result = system_core.optimize("system")
-            except Exception as e:
-                result = f"Error: {e}"
-        elif tool_id == 'mcp_execute':
-            mcp_cmd = args.get('command', 'npx')
-            mcp_args = args.get('args', ['-y', '@modelcontextprotocol/server-filesystem', 'C:\\'])
-            mcp_tool = args.get('tool_name', 'list_directory')
-            mcp_tool_args = args.get('tool_args', {'path': 'C:\\'})
-            result = run_mcp_tool(mcp_cmd, mcp_args, mcp_tool, mcp_tool_args)
-        elif tool_id == 'red_pill':
-            result = "RED PILL TAKEN. Matrix decoded. You are now seeing the raw code."
-        elif tool_id == 'blue_pill':
-            result = "BLUE PILL TAKEN. Ignorance is bliss. Re-entering simulation."
-        elif tool_id == 'vision_ocr':
-            try:
-                import vision_core
-                vision = vision_core.VisionCore()
-                text = vision.extract_text()
-                result = f"Screen OCR Complete. Text extracted: {text[:200]}..."
-            except Exception as e:
-                result = f"Error: {e}"
-        elif tool_id == 'webcam_optics':
-            try:
-                import vision_core
-                vision = vision_core.VisionCore()
-                if hasattr(vision, 'analyze_webcam'):
-                    result = vision.analyze_webcam()
-                else:
-                    result = "Webcam optics initialized. Camera feed analyzed."
-            except Exception as e:
-                result = f"Error: {e}"
-        elif tool_id == 'reddit_intel':
-            result = "Reddit intel scan complete. Gathered latest posts."
-        elif tool_id == 'knowledge_graph':
-            result = "Knowledge graph query complete. Factual triplets retrieved."
-        elif tool_id == 'offline_brain':
-            try:
-                import offline_brain
-                if not offline_brain.brain.is_ready:
-                    offline_brain.brain.initialize()
-                result = f"Offline Mode: {offline_brain.brain.chat(cmd or 'status')}"
-            except Exception as e:
-                result = f"Switched to offline mode (Simulation Fallback). Local SQLite intelligence engaged. {e}"
-        elif tool_id == 'sandbox_execute':
-            try:
-                import sandbox_core
-                res = sandbox_core.sandbox_core.execute_python_code(cmd)
-                result = res.get('stdout', '') + '\n' + res.get('stderr', '') if isinstance(res, dict) else str(res)
-            except Exception as e:
-                result = f"Error: {e}"
-        elif tool_id == 'browser_swarm':
-            try:
-                import browser_core
-                import asyncio
-                browser = browser_core.BrowserCore(None)
-                result = asyncio.run(browser.navigate_and_interact(cmd))
-            except Exception as e:
-                result = f"Error: {e}"
-        elif tool_id == 'mcp_swarm':
-            try:
-                import sub_agent_core
-                result = sub_agent_core.spawn_agent(cmd, agent_type="mcp_agent")
-            except Exception as e:
-                result = f"Error: {e}"
-        elif tool_id == 'auto_pilot':
-            try:
-                import computer_use
-                result = computer_use.auto_pilot(cmd)
-            except Exception as e:
-                result = f"Error: {e}"
-        else:
+        dispatch = {
+            'coder_swarm': lambda: server_tools.dispatch_coder_swarm(cmd or 'write a python script', path=args.get('path', ''), execute=bool(args.get('execute', False))),
+            'computer_use': lambda: server_tools.execute_computer_use(args.get('action', 'click'), args),
+            'vision_screen': lambda: server_tools.analyze_screen(cmd or 'Describe the current screen'),
+            'vision_ocr': lambda: server_tools.ocr_screen(cmd),
+            'webcam_optics': lambda: server_tools.capture_webcam_analysis(cmd or 'Describe what the webcam sees in detail.'),
+            'deep_research': lambda: server_tools.conduct_deep_research(cmd),
+            'reddit_intel': lambda: server_tools.check_reddit(subreddit_from(cmd) or 'singularity'),
+            'knowledge_graph': lambda: server_tools.query_knowledge_graph(cmd),
+            'offline_brain': lambda: server_tools.switch_to_offline(cmd or 'status'),
+            'sandbox_execute': lambda: server_tools.execute_python_sandbox(cmd),
+            'browser_swarm': lambda: server_tools.dispatch_browser_swarm(cmd),
+            'mcp_swarm': lambda: server_tools.dispatch_mcp_swarm(cmd),
+            'auto_pilot': lambda: server_tools.start_visual_autopilot(cmd),
+            'sys_optimize': lambda: server_tools.optimize_system('system'),
+            'red_pill': lambda: "RED PILL TAKEN. Matrix decoded. You are now seeing the raw code.",
+            'blue_pill': lambda: "BLUE PILL TAKEN. Ignorance is bliss. Re-entering simulation.",
+            'mcp_execute': lambda: run_mcp_tool(
+                args.get('command', 'npx'),
+                args.get('args', ['-y', '@modelcontextprotocol/server-filesystem', 'C:\\']),
+                args.get('tool_name', 'list_directory'),
+                args.get('tool_args', {'path': 'C:\\'})),
+        }
+
+        if tool_id not in dispatch:
             return jsonify({'error': f'Unknown tool ID: {tool_id}'}), 400
-            
+        result = dispatch[tool_id]()
+
         try:
             new_xp, new_level, leveled_up = add_xp(10)
         except Exception as e:
             logger.error(f"XP ERROR: {e}")
-            
+
         return jsonify({'status': 'SUCCESS', 'result': result})
     except Exception as e:
         logger.error(f'EXECUTE_TOOL_ERROR: {str(e)}')
@@ -648,21 +834,25 @@ def chat():
         if not gemini_client and not fallback_available:
             return jsonify({'error': 'NO_LLM_AVAILABLE'}), 500
 
+        force_tool = bool(data.get('force_tool') or data.get('tool_args'))
         fallback_payload = history + [{'role': 'user', 'parts': [{'text': msg}]}]
 
-        if gemini_client:
-            logger.info(f'ROUTING: {intent} INTENT -> GEMINI ({PRIMARY_MODEL}, TOOLS ENABLED)')
+        # Plain chat goes straight to a tool-less fast completion (Puter ->
+        # Ollama -> OpenAI). The agent loop is reserved for explicit action
+        # requests, and even then only its safe tool subset is offered, so a
+        # stray tool call can never type/press/click the real desktop.
+        if force_tool:
+            logger.info(f'ROUTING: {intent} INTENT -> AGENT LOOP (TOOLS ENABLED)')
             try:
-                reply = generate_gemini_response(sys_prompt, history, msg)
-                used_model = PRIMARY_MODEL
+                reply, used_model = _agent_text(fallback_payload, sys_prompt)
             except Exception as e:
-                if not fallback_available:
-                    raise
-                logger.warning(f'GEMINI FAILED ({e}), FALLBACK TO ROUTER (NO TOOL SUPPORT)')
-                reply, used_model = generate_fallback_response(fallback_payload, sys_prompt)
+                logger.warning(f'AGENT TEXT FAILED ({e}), FALLBACK TO FAST COMPLETION')
+                msgs = _to_router_messages(fallback_payload, sys_prompt)
+                reply, used_model = generate_completion_with_model(msgs)
         else:
-            logger.info(f'ROUTING: {intent} INTENT -> LLM ROUTER (NO TOOL SUPPORT)')
-            reply, used_model = generate_fallback_response(fallback_payload, sys_prompt)
+            logger.info(f'ROUTING: {intent} INTENT -> LLM ROUTER (FAST, NO TOOLS)')
+            msgs = _to_router_messages(fallback_payload, sys_prompt)
+            reply, used_model = generate_completion_with_model(msgs)
 
         save_memory('user', msg)
         save_memory('model', reply)
@@ -682,7 +872,7 @@ def generate_fallback_stream(messages, sys_prompt, max_retries=3):
     """
     msgs = _to_router_messages(messages, sys_prompt)
 
-    for attempt in range(max_retries):
+    for attempt in range(max(1, max_retries)):
         emitted = False
         try:
             for chunk, model_name in stream_completion(msgs):
@@ -700,6 +890,7 @@ def generate_fallback_stream(messages, sys_prompt, max_retries=3):
             else:
                 logger.error(f'FALLBACK STREAM ERROR: {e}')
                 raise
+    raise RuntimeError("Fallback stream failed")
 
 def generate_gemini_stream(sys_prompt, history, msg, max_retries=3):
     import server_tools
@@ -722,6 +913,9 @@ def generate_gemini_stream(sys_prompt, history, msg, max_retries=3):
                     yield chunk.text
             return
         except Exception as e:
+            if _is_quota_exhausted(e):
+                logger.error(f'GEMINI QUOTA EXHAUSTED, FALLING THROUGH: {e}')
+                raise
             if attempt < max_retries - 1:
                 wait_time = (2 ** attempt) + random.uniform(0, 1)
                 logger.warning(f"GEMINI STREAM RATE LIMIT/ERROR (Attempt {attempt+1}): {e}. Retrying in {wait_time:.2f}s...")
@@ -735,6 +929,7 @@ def chat_stream():
     try:
         data = request.json
         msg = data.get('message', '')
+        force_tool = bool(data.get('force_tool'))
         
         tool_args = data.get('tool_args') or {}
         pill_type = tool_args.get('pill_type', 'blue')
@@ -766,47 +961,50 @@ def chat_stream():
             full_reply = ""
             stream_success = False
 
-            if not gemini_client and not fallback_available:
+            if not fallback_available:
                 yield f"data: {json.dumps({'error': 'NO_LLM_AVAILABLE'})}\n\n"
                 yield "data: [DONE]\n\n"
                 return
 
-            # Only the Gemini path passes server_tools.AVAILABLE_TOOLS, so it is
-            # preferred whenever available -- regardless of intent.
-            if gemini_client:
-                logger.info(f'STREAM ROUTING: {intent} INTENT -> GEMINI ({PRIMARY_MODEL}, TOOLS ENABLED)')
-                model_used = PRIMARY_MODEL
+            # Plain chat streams directly through the fast router (Puter ->
+            # Ollama -> OpenAI) in a single pass: no dead-Gemini attempt and no
+            # tool loop, both of which made every reply crawl. The agent loop
+            # (Tool Arsenal) is reserved for explicit actions so a simple
+            # question no longer burns LLM round-trips on tool decisions.
+            if force_tool:
+                logger.info('STREAM ROUTING: force_tool -> AGENT LOOP (TOOLS ENABLED)')
                 try:
-                    for chunk in generate_gemini_stream(sys_prompt, history, msg):
-                        # The generator yields this sentinel instead of raising,
-                        # so it must be caught here or it is streamed to the user
-                        # as content and persisted as if it were a real reply.
-                        if "[ERROR:" in chunk:
-                            raise RuntimeError(chunk)
-                        full_reply += chunk
-                        yield f"data: {json.dumps({'chunk': chunk, 'model': model_used})}\n\n"
+                    for ev in _agent_events(fallback_payload, sys_prompt):
+                        if 'text' in ev:
+                            full_reply += ev['text']
+                            yield f"data: {json.dumps({'chunk': ev['text'], 'model': ev['model']})}\n\n"
+                        elif 'tool' in ev:
+                            t = ev['tool']
+                            yield f"data: {json.dumps({'type': 'tool', 'tool': t['name'], 'status': t['status'], 'info': t.get('info', '')})}\n\n"
                     stream_success = True
                 except Exception as e:
-                    logger.warning(f'GEMINI STREAM FAILED ({e}).')
-
-            # Fall back only if a non-Gemini backend actually exists, otherwise
-            # the router would raise on every retry and burn the full backoff
-            # before surfacing a misleading error.
-            if not stream_success and fallback_available:
-                if full_reply:
-                    # Discard partial output so the persisted reply is not a
-                    # truncated attempt concatenated with the fallback answer.
-                    logger.info('DISCARDING PARTIAL GEMINI OUTPUT BEFORE FALLBACK.')
-                    full_reply = ""
-                    yield f"data: {json.dumps({'reset': True})}\n\n"
-                logger.info('STREAM ROUTING -> LLM ROUTER (NO TOOL SUPPORT)')
+                    logger.error(f'AGENT STREAM FAILED ({e}).')
+            else:
+                logger.info('STREAM ROUTING: plain chat -> LLM ROUTER (FAST, STREAMING)')
                 try:
-                    for chunk, model_used in generate_fallback_stream(fallback_payload, sys_prompt):
+                    router_msgs = _to_router_messages(fallback_payload, sys_prompt)
+                    for chunk, m in stream_completion(router_msgs):
                         full_reply += chunk
-                        yield f"data: {json.dumps({'chunk': chunk, 'model': model_used})}\n\n"
+                        yield f"data: {json.dumps({'chunk': chunk, 'model': m})}\n\n"
                     stream_success = True
                 except Exception as e:
-                    logger.error(f'FALLBACK STREAM FAILED ({e}).')
+                    logger.warning(f'PLAIN STREAM FAILED ({e}), trying agentic fallback.')
+                    try:
+                        for ev in _agent_events(fallback_payload, sys_prompt):
+                            if 'text' in ev:
+                                full_reply += ev['text']
+                                yield f"data: {json.dumps({'chunk': ev['text'], 'model': ev['model']})}\n\n"
+                            elif 'tool' in ev:
+                                t = ev['tool']
+                                yield f"data: {json.dumps({'type': 'tool', 'tool': t['name'], 'status': t['status'], 'info': t.get('info', '')})}\n\n"
+                        stream_success = True
+                    except Exception as f:
+                        logger.error(f'AGENTIC FALLBACK FAILED ({f}).')
 
             if not stream_success:
                 yield f"data: {json.dumps({'error': 'ALL_LLM_STREAMS_FAILED'})}\n\n"
@@ -867,6 +1065,52 @@ def pin_memory():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+@app.route('/api/configure_ai', methods=['POST'])
+def api_configure_ai():
+    """Arm the backend with the Puter token obtained from the renderer's sign-in.
+
+    Without this, only the renderer's chat talks to Puter; the Tool Arsenal,
+    which runs server-side, would still hit the dead Gemini/OpenAI keys. Sets the
+    runtime env so tool modules that build OpenAI clients from OPENAI_* pick up
+    Puter's OpenAI-compatible endpoint on their next instantiation.
+    """
+    try:
+        data = request.json or {}
+        token = (data.get('puter_token') or '').strip()
+        model = (data.get('model') or '').strip()
+        if not token:
+            return jsonify({'status': 'NO_TOKEN', 'model': os.getenv('JESTER_OPENAI_MODEL')})
+        import llm_router
+        llm_router.configure_puter(token, model=model)
+        # Tool modules read these at construction time; future instances route
+        # to Puter instead of the invalidated OpenAI/ exhausted Gemini keys.
+        os.environ['OPENAI_API_KEY'] = token
+        os.environ['OPENAI_BASE_URL'] = llm_router.PUTER_BASE_URL
+        if model:
+            os.environ['JESTER_OPENAI_MODEL'] = model
+            os.environ['JESTER_PUTER_MODEL'] = model
+        logger.info(f'AI backend configured via Puter token. Model: {model or llm_router.PUTER_MODEL}.')
+        return jsonify({'status': 'ARMED', 'model': model or llm_router.PUTER_MODEL})
+    except Exception as e:
+        logger.error(f'CONFIGURE_AI_ERROR: {str(e)}')
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/remember', methods=['POST'])
+def api_remember():
+    """Persist a chat turn from the client (used when the renderer answers via
+    Puter directly instead of /api/chat_stream, which would otherwise skip the
+    history DB and semantic recall)."""
+    try:
+        data = request.json or {}
+        role = data.get('role', 'user')
+        content = data.get('content', '')
+        if not content:
+            return jsonify({'error': 'empty content'}), 400
+        save_memory(role, content)
+        return jsonify({'status': 'STORED'})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
 @app.route('/api/pulse', methods=['GET'])
 def pulse():
     return jsonify({
@@ -886,6 +1130,21 @@ def reset():
         conn.close()
     except Exception as e:
         logger.error(f'RESET ERROR: {e}')
+
+    # Also clear vector + TF-IDF memory so nothing poisoned is "recalled" later.
+    try:
+        if CHROMA_ENABLED:
+            jester_collection.delete(where={"role": "user"})
+    except Exception as e:
+        logger.error(f'RESET CHROMA ERROR: {e}')
+    try:
+        semantic_cache['dirty'] = False
+        semantic_cache['docs'] = []
+        semantic_cache['vectorizer'] = None
+        semantic_cache['tfidf_docs'] = None
+    except Exception as e:
+        logger.error(f'RESET SEMANTIC CACHE ERROR: {e}')
+
     return jsonify({'status': 'UNPINNED_MEMORY_WIPED'})
 
 

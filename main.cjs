@@ -228,10 +228,21 @@ async function createWindow() {
             resizable: true,
             skipTaskbar: false,
             webPreferences: {
-                nodeIntegration: true,
-                contextIsolation: false,
+                nodeIntegration: false,
+                contextIsolation: true,
                 webSecurity: false
             }
+        });
+
+        // Puter's free AI tier signs you in via a popup (the js.puter.com SDK
+        // flow); Electron blocks window.open by default. Allow the puter.com
+        // login so the one-time auth popup can open and postMessage back.
+        mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+            if (url.startsWith('https://puter.com') || url.startsWith('http://puter.com')) {
+                return { action: 'allow' };
+            }
+            console.log(`[ELECTRON] Blocked popup to: ${url}`);
+            return { action: 'deny' };
         });
 
         let destroyed = false;

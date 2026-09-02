@@ -13,8 +13,23 @@ import llm_router
 class VisionCore:
     def __init__(self):
         # Configure tesseract path if needed, usually in PATH on linux/mac, might need manual path on Windows
-        # pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
-        pass
+        for candidate in (
+            os.getenv('TESSERACT_CMD'),
+            r'C:\Program Files\Tesseract-OCR\tesseract.exe',
+            r'C:\Program Files (x86)\Tesseract-OCR\tesseract.exe',
+        ):
+            if candidate and os.path.isfile(candidate):
+                pytesseract.pytesseract.tesseract_cmd = candidate
+                break
+
+    def _ocr_text(self, image):
+        """OCR an image, unwrapping the TesseractNotFoundError into a clean message."""
+        try:
+            return pytesseract.image_to_string(image)
+        except pytesseract.TesseractNotFoundError:
+            return "OCR_UNAVAILABLE: Tesseract binary not found. Install Tesseract-OCR and set TESSERACT_CMD."
+        except Exception as e:
+            return f"OCR_ERROR: {e}"
 
     def capture_screen(self):
         """Captures the current screen and returns it as a base64 encoded string."""
@@ -26,7 +41,7 @@ class VisionCore:
     def extract_text(self):
         """Extracts text from the current screen using OCR."""
         screenshot = pyautogui.screenshot()
-        text = pytesseract.image_to_string(screenshot)
+        text = self._ocr_text(screenshot)
         return text
 
     def analyze_screen_semantic(self, prompt="Describe what is on the screen in detail."):
@@ -59,6 +74,39 @@ class VisionCore:
                 
         except Exception as e:
             return {"status": "error", "message": f"Semantic analysis failed: {str(e)}"}
+
+    def analyze_webcam(self, prompt: str = "Describe what the webcam sees in detail."):
+        """Capture a webcam frame and analyze it semantically via the multimodal LLM."""
+        print("[VISION CORE] Webcam capture requested...")
+        try:
+            import cv2
+            cap = cv2.VideoCapture(0)
+            if not cap.isOpened():
+                return {"status": "error", "message": "Webcam not accessible."}
+            ok, frame = cap.read()
+            cap.release()
+            if not ok or frame is None:
+                return {"status": "error", "message": "Failed to capture webcam frame."}
+            success, jpg = cv2.imencode('.jpg', frame)
+            if not success:
+                return {"status": "error", "message": "Failed to encode frame."}
+            b64_image = base64.b64encode(jpg.tobytes()).decode('utf-8')
+
+            if llm_router.OPENAI_API_KEY:
+                messages = [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": prompt},
+                            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64_image}"}}
+                        ]
+                    }
+                ]
+                res = llm_router.generate_completion(messages)
+                return {"status": "success", "analysis": res}
+            return {"status": "error", "message": "OPENAI_API_KEY required for semantic vision."}
+        except Exception as e:
+            return {"status": "error", "message": f"Webcam analysis failed: {str(e)}"}
 
     def find_and_click_text(self, target_text):
         """Finds text on the screen and clicks it using real Tesseract OCR."""

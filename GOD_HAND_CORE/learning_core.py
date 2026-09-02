@@ -62,7 +62,7 @@ def auto_extract_and_learn(text: str) -> list:
             clean = res.text.strip().replace("```json", "").replace("```", "").strip()
             triplets = json.loads(clean)
         elif openai_key:
-            client = OpenAI(api_key=openai_key)
+            client = OpenAI(api_key=openai_key, base_url=os.getenv("OPENAI_BASE_URL") or None)
             res = client.chat.completions.create(
                 model=os.getenv("JESTER_OPENAI_MODEL", "gpt-4o"),
                 messages=[{"role": "user", "content": prompt}]

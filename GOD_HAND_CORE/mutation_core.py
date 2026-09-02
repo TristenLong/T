@@ -36,7 +36,7 @@ def mutate_function(filename, func_name, instruction="Optimize"):
     """
     
     try:
-        client = OpenAI(api_key=OPENAI_API_KEY)
+        client = OpenAI(api_key=OPENAI_API_KEY, base_url=os.getenv("OPENAI_BASE_URL") or None)
         response = client.chat.completions.create(
             model="gpt-4o", messages=[{"role": "user", "content": prompt}], response_format={"type": "json_object"}
         )

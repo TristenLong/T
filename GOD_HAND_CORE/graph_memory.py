@@ -11,12 +11,28 @@ NEO4J_USER = os.getenv("NEO4J_USER", "neo4j")
 NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "password")
 
 driver = None
+_unreachable = False
 
 def init_driver():
-    global driver
+    global driver, _unreachable
+    if _unreachable:
+        return False
     if driver is not None:
         return True
     try:
+        # Fast TCP pre-check so an unreachable Neo4j does not block on the
+        # driver's multi-second verify_connectivity() timeout on every call.
+        import socket
+        from urllib.parse import urlparse
+        parsed = urlparse(NEO4J_URI)
+        host = parsed.hostname or 'localhost'
+        port = parsed.port or 7687
+        probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        probe.settimeout(0.5)
+        try:
+            probe.connect((host, port))
+        finally:
+            probe.close()
         driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASSWORD))
         driver.verify_connectivity()
         logger.info("Connected to Neo4j successfully.")
@@ -24,6 +40,7 @@ def init_driver():
     except Exception as e:
         logger.warning(f"Neo4j connection failed: {e}. Falling back to SQLite/Chroma.")
         driver = None
+        _unreachable = True
         return False
 
 def save_memory(role, content):

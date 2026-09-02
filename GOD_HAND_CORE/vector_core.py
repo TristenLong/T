@@ -16,7 +16,7 @@ OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
 client = None
 if OPENAI_API_KEY:
     try:
-        client = OpenAI(api_key=OPENAI_API_KEY)
+        client = OpenAI(api_key=OPENAI_API_KEY, base_url=os.getenv('OPENAI_BASE_URL') or None)
     except:
         pass
 

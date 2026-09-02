@@ -27,7 +27,7 @@ class BrowserCore:
                 
         if self.openai_key:
             try:
-                self.openai_client = OpenAI(api_key=self.openai_key)
+                self.openai_client = OpenAI(api_key=self.openai_key, base_url=os.getenv("OPENAI_BASE_URL") or None)
             except Exception as e:
                 logger.warning(f"[BrowserCore] OpenAI init failed: {e}")
 

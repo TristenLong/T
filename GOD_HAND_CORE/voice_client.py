@@ -56,7 +56,8 @@ def play_audio(file_path):
         # Fallback to system player
         try:
             os.system(f'start {file_path}')
-        except: pass
+        except Exception:
+            pass
 
 def record_audio_fallback(duration=5, fs=44100):
     print(f"  [Recording {duration}s via SoundDevice...]")
@@ -117,10 +118,12 @@ async def run_matrix():
     print("Matrix Voice Interface Online. Press Ctrl+C to exit.")
     
     # Clean up
-    for f in ["reply.mp3", "temp_input.wav"]:
-        if os.path.exists(f):
-            try: os.remove(f)
-            except: pass
+    for temp_file in ["reply.mp3", "temp_input.wav"]:
+        if os.path.exists(temp_file):
+            try:
+                os.remove(temp_file)
+            except Exception:
+                pass
 
     while True:
         user_text = listen_mic() 
