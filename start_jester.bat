@@ -15,17 +15,5 @@ if not exist "%PYTHON_EXE%" (
     set "PYTHON_EXE=python"
 )
 
-echo [SYSTEM] Using Python: %PYTHON_EXE%
-echo [SYSTEM] Starting Vite Dev Server...
-start /b cmd /c "npx vite"
-
-echo [SYSTEM] Waiting for Vite...
-timeout /t 3 /nobreak >nul
-
-echo [SYSTEM] Booting JESTER Electron HUD...
-call .\node_modules\.bin\electron.cmd . --dev
-
-:: Clean up Vite when Electron closes
-echo [SYSTEM] Shutting down...
-taskkill /f /im node.exe >nul 2>&1
-pause
+:: Delegate to the robust Python launch script
+"%PYTHON_EXE%" start_jester.py

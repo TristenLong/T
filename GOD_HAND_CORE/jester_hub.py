@@ -105,6 +105,16 @@ def run_system_test():
     console.print('[bold yellow]>> RUNNING DIAGNOSTICS SUITE...[/bold yellow]')
     subprocess.run([sys.executable, DIAGNOSTICS_SCRIPT])
 
+def run_auto_upgrade():
+    console.print('[bold magenta]>> INITIATING ROVO DEV UPGRADE PROTOCOL...[/bold magenta]')
+    console.print('Starting Atlassian Rovo Dev CLI in interactive mode...')
+    acli_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'acli.exe')
+    try:
+        subprocess.run([acli_path, 'rovodev', 'run'])
+    except Exception as e:
+        console.print(f'[bold red]UPGRADE ERROR: {e}[/bold red]')
+    Prompt.ask('Press Enter to return to Hub...')
+
 def main_menu():
     # Intro
     clear()
@@ -127,6 +137,7 @@ def main_menu():
         table.add_row('5', 'BLACK BOX [History]')
         table.add_row('6', 'SYSTEM DIAGNOSTICS [Test]')
         table.add_row('7', 'EXIT MATRIX')
+        table.add_row('8', 'ROVO DEV UPGRADE [Auto Upgrade]')
         
         status_panel = Panel(
             f'[bold]System Time:[/bold] {time.strftime("%H:%M")}\n[bold]Memory Nodes:[/bold] {mem_count}\n[bold]Core Status:[/bold] ONLINE',
@@ -142,7 +153,7 @@ def main_menu():
         
         console.print(layout)
         
-        choice = Prompt.ask('[bold green]SELECT[/bold green]', choices=['1', '2', '3', '4', '5', '6', '7'])
+        choice = Prompt.ask('[bold green]SELECT[/bold green]', choices=['1', '2', '3', '4', '5', '6', '7', '8'])
         
         if choice == '1': launch_core()
         elif choice == '2': kill_core()
@@ -151,6 +162,7 @@ def main_menu():
         elif choice == '5': view_blackbox()
         elif choice == '6': run_system_test()
         elif choice == '7': sys.exit()
+        elif choice == '8': run_auto_upgrade()
 
 if __name__ == '__main__':
     os.system('title THE MATRIX: JESTER OMEGA')

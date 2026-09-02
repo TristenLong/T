@@ -3,7 +3,8 @@
 import praw
 from dotenv import load_dotenv
 
-load_dotenv(override=True)
+ROOT_ENV = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), '.env')
+load_dotenv(ROOT_ENV, override=True)
 
 def get_reddit_client():
     try:

@@ -21,7 +21,7 @@ def generate_dream(prompt):
         return {"status": "ERROR", "message": "No OpenAI Key"}
 
     try:
-        client = OpenAI(api_key=OPENAI_API_KEY)
+        client = OpenAI(api_key=OPENAI_API_KEY, base_url=os.getenv('OPENAI_BASE_URL') or None)
         response = client.images.generate(
             model="dall-e-3",
             prompt=prompt,

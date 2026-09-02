@@ -1,0 +1,1177 @@
+﻿diff --git a/.gitignore b/.gitignore
+index 1044de2..cb9d3a8 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -32,3 +32,22 @@ dist-ssr
+ __pycache__/
+ *.pyc
+ *.zip
++
++# Shared secret for the local API (GOD_HAND_CORE/jester_auth.py). Generated on
++# first run, machine-local, and must never be committed -- committing it would
++# hand every clone the token that guards /api/sandbox.
++.jester_token
++
++# Local git worktrees. A worktree directory contains a .git *file*, which git
++# mistakes for a submodule and records as a gitlink (mode 160000). One was
++# committed that way, giving anyone who cloned this repo a submodule reference
++# pointing at a commit that only existed on the original machine.
++*.worktrees/
++.claude/worktrees/
++
++# Claude Code local state, including settings.local.json (machine-specific
++# permissions). Untracked but easy to sweep in with `git add -A`.
++.claude/
++
++# Atlassian CLI
++acli.exe
+diff --git a/GOD_HAND_CORE/bot.py b/GOD_HAND_CORE/bot.py
+index 894e187..be056de 100644
+--- a/GOD_HAND_CORE/bot.py
++++ b/GOD_HAND_CORE/bot.py
+@@ -153,13 +153,23 @@ except Exception as e:
+ 
+ # Utility Functions
+ import requests
++
++try:
++    import jester_auth
++except ImportError:  # bot.py can be launched with a different sys.path
++    jester_auth = None
++
++
+ def notify_frontend(event_type, message, payload=None):
+     try:
++        # /api/internal/bot_event now requires the shared token; without it the
++        # server returns 401 and every bot event is silently dropped.
++        headers = jester_auth.auth_headers() if jester_auth else {}
+         requests.post('http://127.0.0.1:5000/api/internal/bot_event', json={
+             'event_type': event_type,
+             'message': message,
+             'payload': payload or {}
+-        }, timeout=2)
++        }, headers=headers, timeout=2)
+     except Exception:
+         pass
+ 
+diff --git a/GOD_HAND_CORE/chroma_db/chroma.sqlite3 b/GOD_HAND_CORE/chroma_db/chroma.sqlite3
+index 74b5be5..61e8ec4 100644
+Binary files a/GOD_HAND_CORE/chroma_db/chroma.sqlite3 and b/GOD_HAND_CORE/chroma_db/chroma.sqlite3 differ
+diff --git a/GOD_HAND_CORE/jester_V73_OMNIPRESENCE.db b/GOD_HAND_CORE/jester_V73_OMNIPRESENCE.db
+index fef9792..6267cb6 100644
+Binary files a/GOD_HAND_CORE/jester_V73_OMNIPRESENCE.db and b/GOD_HAND_CORE/jester_V73_OMNIPRESENCE.db differ
+diff --git a/GOD_HAND_CORE/jester_hub.py b/GOD_HAND_CORE/jester_hub.py
+index d1344c6..06cff6f 100644
+--- a/GOD_HAND_CORE/jester_hub.py
++++ b/GOD_HAND_CORE/jester_hub.py
+@@ -105,6 +105,16 @@ def run_system_test():
+     console.print('[bold yellow]>> RUNNING DIAGNOSTICS SUITE...[/bold yellow]')
+     subprocess.run([sys.executable, DIAGNOSTICS_SCRIPT])
+ 
++def run_auto_upgrade():
++    console.print('[bold magenta]>> INITIATING ROVO DEV UPGRADE PROTOCOL...[/bold magenta]')
++    console.print('Starting Atlassian Rovo Dev CLI in interactive mode...')
++    acli_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'acli.exe')
++    try:
++        subprocess.run([acli_path, 'rovodev', 'run'])
++    except Exception as e:
++        console.print(f'[bold red]UPGRADE ERROR: {e}[/bold red]')
++    Prompt.ask('Press Enter to return to Hub...')
++
+ def main_menu():
+     # Intro
+     clear()
+@@ -127,6 +137,7 @@ def main_menu():
+         table.add_row('5', 'BLACK BOX [History]')
+         table.add_row('6', 'SYSTEM DIAGNOSTICS [Test]')
+         table.add_row('7', 'EXIT MATRIX')
++        table.add_row('8', 'ROVO DEV UPGRADE [Auto Upgrade]')
+         
+         status_panel = Panel(
+             f'[bold]System Time:[/bold] {time.strftime("%H:%M")}\n[bold]Memory Nodes:[/bold] {mem_count}\n[bold]Core Status:[/bold] ONLINE',
+@@ -142,7 +153,7 @@ def main_menu():
+         
+         console.print(layout)
+         
+-        choice = Prompt.ask('[bold green]SELECT[/bold green]', choices=['1', '2', '3', '4', '5', '6', '7'])
++        choice = Prompt.ask('[bold green]SELECT[/bold green]', choices=['1', '2', '3', '4', '5', '6', '7', '8'])
+         
+         if choice == '1': launch_core()
+         elif choice == '2': kill_core()
+@@ -151,6 +162,7 @@ def main_menu():
+         elif choice == '5': view_blackbox()
+         elif choice == '6': run_system_test()
+         elif choice == '7': sys.exit()
++        elif choice == '8': run_auto_upgrade()
+ 
+ if __name__ == '__main__':
+     os.system('title THE MATRIX: JESTER OMEGA')
+diff --git a/GOD_HAND_CORE/jester_memory.db b/GOD_HAND_CORE/jester_memory.db
+index ea0cc50..fdbe126 100644
+Binary files a/GOD_HAND_CORE/jester_memory.db and b/GOD_HAND_CORE/jester_memory.db differ
+diff --git a/GOD_HAND_CORE/jester_xp.json b/GOD_HAND_CORE/jester_xp.json
+index fce7c55..decd9c0 100644
+--- a/GOD_HAND_CORE/jester_xp.json
++++ b/GOD_HAND_CORE/jester_xp.json
+@@ -1,4 +1,4 @@
+ {
+-    "xp": 90,
+-    "level": 1
++    "xp": 760,
++    "level": 3
+ }
+\ No newline at end of file
+diff --git a/GOD_HAND_CORE/pyproject.toml b/GOD_HAND_CORE/pyproject.toml
+index a8e8bd4..7bb9825 100644
+--- a/GOD_HAND_CORE/pyproject.toml
++++ b/GOD_HAND_CORE/pyproject.toml
+@@ -35,6 +35,9 @@ dependencies = [
+     "scipy>=1.15.3",
+     "neo4j>=6.2.0",
+     "docker>=7.2.0",
++    "transformers>=5.15.1",
++    "mcp>=2.0.0",
++    "pytesseract>=0.3.13",
+ ]
+ 
+ [dependency-groups]
+diff --git a/GOD_HAND_CORE/server.py b/GOD_HAND_CORE/server.py
+index 3d4dd53..13208a0 100644
+--- a/GOD_HAND_CORE/server.py
++++ b/GOD_HAND_CORE/server.py
+@@ -8,6 +8,7 @@ import time
+ import requests
+ 
+ import graph_memory
++import jester_auth
+ 
+ # Suppress GRPC warnings
+ os.environ["GRPC_VERBOSITY"] = "ERROR"
+@@ -130,11 +131,72 @@ app = Flask(__name__)
+ CORS(app, origins=[
+     re.compile(r"^http://(localhost|127\.0\.0\.1)(:\d+)?$"),
+     re.compile(r"^chrome-extension://[a-p]+$"),
+-])
++], allow_headers=["Content-Type", jester_auth.TOKEN_HEADER], supports_credentials=False)
+ 
+ logging.basicConfig(level=logging.INFO)
+ logger = logging.getLogger('SOURCE_CORE')
+ 
++# --- Authentication -------------------------------------------------------
++# Loopback binding keeps other machines out, but every process and browser
++# extension on this machine could still reach /api/sandbox (arbitrary Python),
++# /api/execute_tool (arbitrary subprocess, mouse and keyboard) and the full chat
++# history. Require a shared token that only filesystem-capable callers can read.
++API_TOKEN = jester_auth.load_token(create=True)
++AUTH_ENFORCED = jester_auth.auth_required()
++
++# Endpoints reachable without a token. Deliberately tiny: /api/pulse is the
++# liveness probe the launcher and clients poll before they have a token, and it
++# returns nothing sensitive (CPU, RAM, model name). Everything else -- including
++# read-only history, which is private conversation data -- requires the token.
++AUTH_EXEMPT_PATHS = frozenset({'/api/pulse'})
++
++
++@app.before_request
++def enforce_api_token():
++    # Preflight carries no credentials by design; flask-cors answers it.
++    if request.method == 'OPTIONS':
++        return None
++    if not AUTH_ENFORCED or not API_TOKEN:
++        return None
++    if not request.path.startswith('/api/') or request.path in AUTH_EXEMPT_PATHS:
++        return None
++
++    supplied = request.headers.get(jester_auth.TOKEN_HEADER)
++    if not supplied:
++        # EventSource cannot set headers. The React app sidesteps this because
++        # Vite's proxy injects the header server-side, but a direct SSE consumer
++        # has no alternative to the query string.
++        supplied = request.args.get(jester_auth.TOKEN_QUERY_PARAM)
++
++    if jester_auth.token_matches(supplied, API_TOKEN):
++        return None
++
++    logger.warning(
++        f'REJECTED UNAUTHENTICATED {request.method} {request.path} '
++        f'from {request.remote_addr} (origin={request.headers.get("Origin", "-")})'
++    )
++    return jsonify({
++        'error': 'UNAUTHORIZED',
++        'detail': (
++            f'Send the shared token in the {jester_auth.TOKEN_HEADER} header. '
++            f'It is stored at {jester_auth.TOKEN_FILE}.'
++        ),
++    }), 401
++
++
++if not AUTH_ENFORCED:
++    logger.warning(
++        'JESTER_REQUIRE_AUTH is off -- code-execution endpoints are open to '
++        'every process and browser extension on this machine.'
++    )
++elif not API_TOKEN:
++    logger.error(
++        'No API token could be loaded or created; authentication is INACTIVE. '
++        f'Check write access to {jester_auth.TOKEN_FILE}.'
++    )
++else:
++    logger.info(f'API AUTH ACTIVE. Token file: {jester_auth.TOKEN_FILE}')
++
+ 
+ def get_swarm_data():
+     try:
+@@ -674,7 +736,8 @@ def chat_stream():
+         data = request.json
+         msg = data.get('message', '')
+         
+-        pill_type = data.get('tool_args', {}).get('pill_type', 'blue')
++        tool_args = data.get('tool_args') or {}
++        pill_type = tool_args.get('pill_type', 'blue')
+         sys_prompt = 'You are JESTER V1000: THE GOD HAND. Mission: Break the simulation. '
+         if msg == 'take_pill':
+             msg = f'I choose the {pill_type} pill.'
+diff --git a/GOD_HAND_CORE/server_tools.py b/GOD_HAND_CORE/server_tools.py
+index 83201c3..05df6ca 100644
+--- a/GOD_HAND_CORE/server_tools.py
++++ b/GOD_HAND_CORE/server_tools.py
+@@ -1,5 +1,6 @@
+ import asyncio
+ import os
++import subprocess
+ import sys
+ 
+ from pydantic import BaseModel, Field
+@@ -120,6 +121,16 @@ def start_visual_autopilot(objective: str) -> str:
+     except Exception as e:
+         return f"Error: {e}"
+ 
++def run_rovo_dev(prompt: str) -> str:
++    """Dispatches the Atlassian Rovo Dev CLI autonomous agent to execute complex coding or system upgrade tasks."""
++    try:
++        # Assuming acli.exe is in the project root relative to GOD_HAND_CORE
++        acli_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'acli.exe')
++        res = subprocess.run([acli_path, 'rovodev', 'run', prompt, '--yolo'], capture_output=True, text=True)
++        return f"Rovo Dev Output:\n{res.stdout}\n{res.stderr}"
++    except Exception as e:
++        return f"Rovo Dev Error: {e}"
++
+ AVAILABLE_TOOLS = [
+     execute_computer_use,
+     dispatch_coder_swarm,
+@@ -132,5 +143,6 @@ AVAILABLE_TOOLS = [
+     analyze_screen,
+     execute_python_sandbox,
+     dispatch_mcp_swarm,
+-    start_visual_autopilot
++    start_visual_autopilot,
++    run_rovo_dev
+ ]
+diff --git a/browser_extension/background.js b/browser_extension/background.js
+index 9a18275..43d9087 100644
+--- a/browser_extension/background.js
++++ b/browser_extension/background.js
+@@ -1,4 +1,8 @@
+-/* global chrome */
++/* global chrome, importScripts, JesterAuth */
++
++// Classic MV3 service worker (no "type": "module" in the manifest), so
++// importScripts is how the shared auth helper gets loaded.
++importScripts('jester-auth.js');
+ 
+ chrome.runtime.onInstalled.addListener(() => {
+   chrome.contextMenus.removeAll(() => {
+@@ -50,30 +54,39 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+ });
+ 
+ async function sendToJester(data) {
+-  const endpoints = [
+-    'http://127.0.0.1:5000/api/research/inject',
+-    'http://localhost:5000/api/research/inject',
+-    'http://127.0.0.1:5000/api/memory_link',
+-    'http://localhost:5000/api/memory_link'
+-  ];
++  // These are two DIFFERENT endpoints, not four fallbacks for one: the old list
++  // tried /api/research/inject then /api/memory_link and returned whichever
++  // answered first, so the same payload could land in either store depending on
++  // timing. Pick the one that matches the payload and only vary the host.
++  const endpointPath =
++    data && data.type === 'selection' ? '/api/memory_link' : '/api/research/inject';
++  const hosts = ['http://127.0.0.1:5000', 'http://localhost:5000'];
++  const headers = await JesterAuth.jesterHeaders();
+ 
+   let lastError = null;
+-  for (const endpoint of endpoints) {
++  for (const host of hosts) {
+     try {
+-      const response = await fetch(endpoint, {
++      const response = await fetch(host + endpointPath, {
+         method: 'POST',
+-        headers: { 'Content-Type': 'application/json' },
++        headers,
+         body: JSON.stringify(data)
+       });
++      if (response.status === 401) {
++        // Not a connectivity failure -- trying the other host would produce the
++        // identical 401 and then report a misleading "connection failed".
++        throw JesterAuth.jesterAuthError();
++      }
+       if (response.ok) {
+         const result = await response.json();
+         console.log('[JESTER Memory Clip] Synced successfully:', result);
+         return result;
+       }
++      lastError = new Error(`JESTER responded ${response.status}`);
+     } catch (err) {
++      if (err && err.jesterAuth) throw err;
+       lastError = err;
+     }
+   }
+   console.error('[JESTER Memory Clip] Connection failed:', lastError);
+-  throw lastError || new Error("Failed to connect to JESTER server at port 5000");
++  throw lastError || new Error('Failed to connect to JESTER server at port 5000');
+ }
+diff --git a/browser_extension/sidepanel.html b/browser_extension/sidepanel.html
+index 0e27f70..1c80cee 100644
+--- a/browser_extension/sidepanel.html
++++ b/browser_extension/sidepanel.html
+@@ -35,6 +35,32 @@
+     }
+     button:hover { background: #00ff41; color: #000; }
+     #log { margin-top: 20px; font-size: 0.8rem; color: #008f11; white-space: pre-wrap; }
++    /* Token entry. The backend rejects /api/* without a shared secret, and an
++       extension cannot read it off disk, so the user pastes it in once. This
++       lives in the side panel because manifest.json sets no default_popup --
++       clicking the toolbar icon opens this panel, so it is the only surface the
++       user can actually reach. */
++    .auth {
++      margin-top: 20px;
++      border-top: 1px solid #008f11;
++      padding-top: 10px;
++    }
++    .auth label { font-size: 0.7rem; color: #008f11; letter-spacing: 1px; }
++    .auth-row { display: flex; gap: 6px; margin-top: 6px; }
++    .auth input {
++      flex: 1;
++      min-width: 0;
++      background: #000;
++      color: #00ff41;
++      border: 1px solid #008f11;
++      padding: 6px;
++      font-family: inherit;
++      font-size: 0.75rem;
++      box-sizing: border-box;
++    }
++    .auth input:focus { outline: none; border-color: #00ff41; }
++    .auth button { width: auto; flex: 0 0 auto; margin-top: 0; padding: 6px 10px; }
++    .auth-hint { font-size: 0.65rem; color: #045c0b; margin-top: 4px; word-break: break-all; }
+   </style>
+ </head>
+ <body>
+@@ -43,6 +69,17 @@
+   <textarea id="prompt" placeholder="Command JESTER..."></textarea>
+   <button id="sendBtn">EXECUTE</button>
+   <div id="log"></div>
++  <div class="auth">
++    <label for="tokenInput">API TOKEN <span id="tokenState"></span></label>
++    <div class="auth-row">
++      <input id="tokenInput" type="password" autocomplete="off" spellcheck="false"
++             placeholder="paste token">
++      <button id="saveTokenBtn">SAVE</button>
++    </div>
++    <div class="auth-hint">From GOD_HAND_CORE/.jester_token</div>
++  </div>
++  <!-- jester-auth.js must load first: sidepanel.js calls JesterAuth at click time. -->
++  <script src="jester-auth.js"></script>
+   <script src="sidepanel.js"></script>
+ </body>
+ </html>
+diff --git a/browser_extension/sidepanel.js b/browser_extension/sidepanel.js
+index 1f06b65..ed18f0e 100644
+--- a/browser_extension/sidepanel.js
++++ b/browser_extension/sidepanel.js
+@@ -1,32 +1,112 @@
+-document.getElementById('sendBtn').addEventListener('click', async () => {
+-  const prompt = document.getElementById('prompt').value;
++/* global chrome, JesterAuth */
++
++const logEl = document.getElementById('log');
++const promptEl = document.getElementById('prompt');
++const sendBtn = document.getElementById('sendBtn');
++const tokenInput = document.getElementById('tokenInput');
++const tokenState = document.getElementById('tokenState');
++const saveTokenBtn = document.getElementById('saveTokenBtn');
++
++function appendLog(line) {
++  logEl.innerText = `${line}\n` + logEl.innerText;
++}
++
++sendBtn.addEventListener('click', async () => {
++  const prompt = promptEl.value;
+   if (!prompt) return;
+-  
+-  const log = document.getElementById('log');
+-  log.innerText = "Executing...\n" + log.innerText;
+-  
++
++  appendLog('Executing...');
++  sendBtn.disabled = true;
++
+   try {
+     // Send to local Jester Server
+     const res = await fetch('http://localhost:5000/api/chat', {
+       method: 'POST',
+-      headers: { 'Content-Type': 'application/json' },
++      headers: await JesterAuth.jesterHeaders(),
+       body: JSON.stringify({ message: prompt })
+     });
+-    
++
++    if (res.status === 401) {
++      throw JesterAuth.jesterAuthError();
++    }
++    if (!res.ok) {
++      throw new Error(`JESTER responded ${res.status}`);
++    }
++
+     const data = await res.json();
+-    log.innerText = `JESTER: ${data.response}\n\n` + log.innerText;
+-    document.getElementById('prompt').value = '';
+-    
+-    // Attempt DOM automation if Jester requested it (simple trigger example)
+-    if (data.response.includes("DOM_ACTION:")) {
+-       const action = data.response.split("DOM_ACTION:")[1].trim();
+-       chrome.tabs.query({active: true, currentWindow: true}, (tabs) => {
+-         chrome.tabs.sendMessage(tabs[0].id, { type: "EXECUTE_DOM", action: action }, (response) => {
+-           log.innerText = `DOM Result: ${response?.status || 'No Response'}\n` + log.innerText;
+-         });
+-       });
++    appendLog(`JESTER: ${data.response}\n`);
++    promptEl.value = '';
++
++    // Attempt DOM automation if Jester requested it (simple trigger example).
++    // Guarded on `data.response` existing: an error-shaped reply has no
++    // `response` field, and calling .includes() on undefined threw a TypeError
++    // that masked the real server error.
++    if (data.response && data.response.includes('DOM_ACTION:')) {
++      const action = data.response.split('DOM_ACTION:')[1].trim();
++      chrome.tabs.query({ active: true, currentWindow: true }, tabs => {
++        if (!tabs || !tabs[0]) {
++          appendLog('DOM Result: no active tab');
++          return;
++        }
++        chrome.tabs.sendMessage(tabs[0].id, { type: 'EXECUTE_DOM', action: action }, response => {
++          // Without this check a missing content script surfaces as an
++          // unchecked-lastError warning in the console and nothing in the UI.
++          if (chrome.runtime.lastError) {
++            appendLog(`DOM Result: ${chrome.runtime.lastError.message}`);
++            return;
++          }
++          appendLog(`DOM Result: ${response?.status || 'No Response'}`);
++        });
++      });
+     }
+-  } catch(e) {
+-    log.innerText = `Error: ${e.message}\n` + log.innerText;
++  } catch (e) {
++    appendLog(`Error: ${e.message}`);
++  } finally {
++    sendBtn.disabled = false;
++  }
++});
++
++/*
++ * Token management.
++ *
++ * The backend requires an X-Jester-Token header on /api/* and an extension
++ * cannot read the token file off disk -- that is deliberate, it is what stops
++ * every other installed extension from calling /api/sandbox. So the user pastes
++ * it in once and chrome.storage.local keeps it.
++ *
++ * The value is never rendered back into the input; only whether one is set.
++ */
++async function refreshTokenState() {
++  const token = await JesterAuth.getJesterToken();
++  if (token) {
++    tokenState.textContent = '┬╖ SET';
++    tokenState.style.color = '#00ff41';
++    tokenInput.placeholder = 'ΓÇóΓÇóΓÇóΓÇóΓÇóΓÇóΓÇóΓÇó (saved)';
++  } else {
++    tokenState.textContent = '┬╖ MISSING';
++    tokenState.style.color = '#ff4455';
++    tokenInput.placeholder = 'paste token';
+   }
++}
++
++saveTokenBtn.addEventListener('click', async () => {
++  const value = tokenInput.value.trim();
++  if (!value) {
++    appendLog('Error: paste the token from GOD_HAND_CORE/.jester_token first.');
++    return;
++  }
++  try {
++    await JesterAuth.setJesterToken(value);
++    tokenInput.value = '';
++    appendLog('Token saved.');
++    await refreshTokenState();
++  } catch (err) {
++    appendLog(`Error: could not save token: ${err.message}`);
++  }
++});
++
++tokenInput.addEventListener('keydown', event => {
++  if (event.key === 'Enter') saveTokenBtn.click();
+ });
++
++refreshTokenState();
+diff --git a/chrome_extension/background.js b/chrome_extension/background.js
+index 75483e2..03a8aa6 100644
+--- a/chrome_extension/background.js
++++ b/chrome_extension/background.js
+@@ -1,4 +1,8 @@
+-/* global chrome */
++/* global chrome, importScripts, JesterAuth */
++
++// Classic MV3 service worker (no "type": "module" in the manifest), so
++// importScripts is how the shared auth helper gets loaded.
++importScripts('jester-auth.js');
+ 
+ chrome.runtime.onInstalled.addListener(() => {
+   chrome.contextMenus.removeAll(() => {
+@@ -55,59 +59,55 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+   }
+ });
+ 
+-async function forwardToJester(payload) {
+-  const endpoints = [
+-    'http://127.0.0.1:5000/api/chat',
+-    'http://localhost:5000/api/chat'
+-  ];
++// The two entries in each list below are the SAME endpoint on two spellings of
++// the loopback host -- a genuine fallback, unlike the mixed-endpoint list this
++// used to share with browser_extension. Only the host varies.
++const JESTER_HOSTS = ['http://127.0.0.1:5000', 'http://localhost:5000'];
+ 
+-  let messageText = '';
+-  if (typeof payload === 'string') {
+-    messageText = payload;
+-  } else if (payload && payload.text) {
+-    messageText = `I have extracted the following context from the user's browser tab:\nURL: ${payload.url || ''}\nTitle: ${payload.title || ''}\nContent:\n${payload.text}\n\nPlease analyze this, highlight key insights, and summarize actionable findings.`;
+-  } else {
+-    messageText = JSON.stringify(payload);
+-  }
++async function postToJester(endpointPath, body) {
++  const headers = await JesterAuth.jesterHeaders();
+ 
+   let lastError = null;
+-  for (const endpoint of endpoints) {
++  for (const host of JESTER_HOSTS) {
+     try {
+-      const r = await fetch(endpoint, {
++      const r = await fetch(host + endpointPath, {
+         method: 'POST',
+-        headers: { 'Content-Type': 'application/json' },
+-        body: JSON.stringify({ message: messageText })
++        headers,
++        body: JSON.stringify(body)
+       });
++      if (r.status === 401) {
++        // Retrying the other host would produce an identical 401 and then
++        // report a misleading "failed to contact backend".
++        throw JesterAuth.jesterAuthError();
++      }
+       if (r.ok) {
+         return await r.json();
+       }
++      // The old code dropped non-ok responses on the floor, so a 500 from both
++      // hosts surfaced as "failed to contact JESTER backend" -- which sent the
++      // user hunting a connectivity problem that did not exist.
++      lastError = new Error(`JESTER responded ${r.status} on ${endpointPath}`);
+     } catch (e) {
++      if (e && e.jesterAuth) throw e;
+       lastError = e;
+     }
+   }
+-  throw lastError || new Error("Failed to contact JESTER backend at localhost:5000");
++  throw lastError || new Error('Failed to contact JESTER backend at localhost:5000');
+ }
+ 
+-async function forwardCommandToJester(toolId, cmd) {
+-  const endpoints = [
+-    'http://127.0.0.1:5000/api/execute_tool',
+-    'http://localhost:5000/api/execute_tool'
+-  ];
+-
+-  let lastError = null;
+-  for (const endpoint of endpoints) {
+-    try {
+-      const r = await fetch(endpoint, {
+-        method: 'POST',
+-        headers: { 'Content-Type': 'application/json' },
+-        body: JSON.stringify({ tool_id: toolId, cmd: cmd })
+-      });
+-      if (r.ok) {
+-        return await r.json();
+-      }
+-    } catch (e) {
+-      lastError = e;
+-    }
++async function forwardToJester(payload) {
++  let messageText = '';
++  if (typeof payload === 'string') {
++    messageText = payload;
++  } else if (payload && payload.text) {
++    messageText = `I have extracted the following context from the user's browser tab:\nURL: ${payload.url || ''}\nTitle: ${payload.title || ''}\nContent:\n${payload.text}\n\nPlease analyze this, highlight key insights, and summarize actionable findings.`;
++  } else {
++    messageText = JSON.stringify(payload);
+   }
+-  throw lastError || new Error("Failed to contact JESTER backend at localhost:5000");
++
++  return postToJester('/api/chat', { message: messageText });
++}
++
++async function forwardCommandToJester(toolId, cmd) {
++  return postToJester('/api/execute_tool', { tool_id: toolId, cmd: cmd });
+ }
+diff --git a/chrome_extension/popup.html b/chrome_extension/popup.html
+index fb0f415..98d481c 100644
+--- a/chrome_extension/popup.html
++++ b/chrome_extension/popup.html
+@@ -127,6 +127,49 @@
+       color: #00ff66;
+       font-size: 10px;
+     }
++    /* Token entry. The backend rejects /api/* without a shared secret and an
++       extension cannot read it off disk, so the user pastes it in once. */
++    .auth {
++      border-top: 1px solid #00ff6633;
++      padding-top: 10px;
++      display: flex;
++      flex-direction: column;
++      gap: 6px;
++    }
++    .auth label {
++      font-size: 10px;
++      color: #88cc99;
++      letter-spacing: 0.5px;
++    }
++    .auth-row {
++      display: flex;
++      gap: 6px;
++    }
++    .auth input {
++      flex: 1;
++      min-width: 0;
++      background: #001205;
++      color: #00ff66;
++      border: 1px solid #00ff6644;
++      border-radius: 3px;
++      padding: 7px;
++      font-family: inherit;
++      font-size: 11px;
++    }
++    .auth input:focus {
++      outline: none;
++      border-color: #00ff66;
++    }
++    .auth button {
++      width: auto;
++      flex: 0 0 auto;
++      padding: 7px 10px;
++    }
++    .auth-hint {
++      font-size: 10px;
++      color: #557a5f;
++      word-break: break-all;
++    }
+   </style>
+ </head>
+ <body>
+@@ -144,6 +187,16 @@
+     </div>
+     <div id="outputBox" class="output-box"></div>
+   </div>
++  <div class="auth">
++    <label for="tokenInput">API TOKEN <span id="tokenState"></span></label>
++    <div class="auth-row">
++      <input id="tokenInput" type="password" autocomplete="off" spellcheck="false"
++             placeholder="paste token">
++      <button id="saveTokenBtn">SAVE</button>
++    </div>
++    <div class="auth-hint">From GOD_HAND_CORE/.jester_token</div>
++  </div>
++  <script src="jester-auth.js"></script>
+   <script src="popup.js"></script>
+ </body>
+ </html>
+diff --git a/chrome_extension/popup.js b/chrome_extension/popup.js
+index 2fe5301..066dd9f 100644
+--- a/chrome_extension/popup.js
++++ b/chrome_extension/popup.js
+@@ -1,4 +1,4 @@
+-/* global chrome */
++/* global chrome, JesterAuth */
+ 
+ const extractBtn = document.getElementById('extractBtn');
+ const errorMsg = document.getElementById('errorMsg');
+@@ -6,6 +6,9 @@ const outputContainer = document.getElementById('outputContainer');
+ const outputBox = document.getElementById('outputBox');
+ const modelTag = document.getElementById('modelTag');
+ const statusBadge = document.getElementById('statusBadge');
++const tokenInput = document.getElementById('tokenInput');
++const tokenState = document.getElementById('tokenState');
++const saveTokenBtn = document.getElementById('saveTokenBtn');
+ 
+ function showError(msg) {
+   errorMsg.textContent = msg;
+@@ -94,3 +97,50 @@ function extractPageData() {
+   const text = (document.body ? document.body.innerText : '').substring(0, 6000);
+   return { title, url, text };
+ }
++
++/*
++ * Token management.
++ *
++ * The backend requires an X-Jester-Token header on /api/* and an extension
++ * cannot read the token file off disk -- that is deliberate, it is what stops
++ * every other installed extension from calling /api/sandbox. So the user pastes
++ * it in once and chrome.storage.local keeps it.
++ *
++ * The value is never rendered back into the input; only whether one is set.
++ */
++async function refreshTokenState() {
++  const token = await JesterAuth.getJesterToken();
++  if (token) {
++    tokenState.textContent = '┬╖ SET';
++    tokenState.style.color = '#00ff66';
++    tokenInput.placeholder = 'ΓÇóΓÇóΓÇóΓÇóΓÇóΓÇóΓÇóΓÇó (saved)';
++  } else {
++    tokenState.textContent = '┬╖ MISSING';
++    tokenState.style.color = '#ff8899';
++    tokenInput.placeholder = 'paste token';
++  }
++}
++
++saveTokenBtn.addEventListener('click', async () => {
++  const value = tokenInput.value.trim();
++  if (!value) {
++    showError('Paste the token from GOD_HAND_CORE/.jester_token first.');
++    return;
++  }
++  try {
++    await JesterAuth.setJesterToken(value);
++    tokenInput.value = '';
++    clearError();
++    statusBadge.textContent = 'TOKEN SAVED';
++    await refreshTokenState();
++    setTimeout(() => { statusBadge.textContent = 'READY'; }, 2000);
++  } catch (err) {
++    showError(`Could not save token: ${err.message}`);
++  }
++});
++
++tokenInput.addEventListener('keydown', event => {
++  if (event.key === 'Enter') saveTokenBtn.click();
++});
++
++refreshTokenState();
+diff --git a/main.cjs b/main.cjs
+index 1a88389..4fa9350 100644
+--- a/main.cjs
++++ b/main.cjs
+@@ -1,10 +1,42 @@
+ const { app, BrowserWindow, screen, globalShortcut, ipcMain } = require('electron');
+ const { spawn } = require('child_process');
++const fs = require('node:fs');
++const http = require('node:http');
++const net = require('net');
+ const path = require('path');
++const { loadOrCreateToken } = require('./jester-token.cjs');
+ 
+ let mainWindow;
+ const pythonProcesses = [];
+ let isClickThrough = true;
++let rendererHost = null;
++
++const FLASK_HOST = '127.0.0.1';
++const FLASK_PORT = 5000;
++
++// Is something already accepting connections there?
++//
++// start_jester.py now starts the backend too, because when Electron was its
++// only owner a failed Electron launch left the UI running against a dead port
++// with no error anywhere. Both launchers check first, so whichever wins starts
++// the backend and the other attaches instead of racing for EADDRINUSE.
++function isPortListening(port, host = FLASK_HOST, timeout = 750) {
++    return new Promise((resolve) => {
++        const socket = new net.Socket();
++        let settled = false;
++        const finish = (result) => {
++            if (settled) return;
++            settled = true;
++            socket.destroy();
++            resolve(result);
++        };
++        socket.setTimeout(timeout);
++        socket.once('connect', () => finish(true));
++        socket.once('timeout', () => finish(false));
++        socket.once('error', () => finish(false));
++        socket.connect(port, host);
++    });
++}
+ 
+ // Helper to spawn a python process safely
+ function startPythonService(name, command, args, cwd) {
+@@ -53,7 +85,132 @@ function startPythonService(name, command, args, cwd) {
+     pythonProcesses.push(proc);
+ }
+ 
+-function createWindow() {
++/*
++ * Production renderer host.
++ *
++ * The window used to be loaded with loadFile(dist/index.html) in production,
++ * i.e. over file://. Every backend call in the renderer is a relative
++ * '/api/...' URL, and under file:// that resolves to file:///api/... -- so the
++ * built app could not reach the backend at all and only the Vite dev server
++ * ever worked. Serving dist/ over loopback HTTP and proxying /api exactly the
++ * way vite.config.js does makes production behave identically to dev, keeps the
++ * renderer on a single origin (so no CORS at all), and keeps the shared token
++ * confined to the main process.
++ */
++const MIME_TYPES = {
++    '.html': 'text/html; charset=utf-8',
++    '.js': 'text/javascript; charset=utf-8',
++    '.mjs': 'text/javascript; charset=utf-8',
++    '.css': 'text/css; charset=utf-8',
++    '.json': 'application/json; charset=utf-8',
++    '.map': 'application/json; charset=utf-8',
++    '.svg': 'image/svg+xml',
++    '.png': 'image/png',
++    '.jpg': 'image/jpeg',
++    '.jpeg': 'image/jpeg',
++    '.gif': 'image/gif',
++    '.webp': 'image/webp',
++    '.ico': 'image/x-icon',
++    '.woff': 'font/woff',
++    '.woff2': 'font/woff2',
++    '.ttf': 'font/ttf',
++    '.wasm': 'application/wasm'
++};
++
++function proxyToBackend(req, res, url, apiToken) {
++    const headers = { ...req.headers, host: `${FLASK_HOST}:${FLASK_PORT}` };
++    if (apiToken) headers['x-jester-token'] = apiToken;
++    // Compression would buffer server-sent events, and the HUD streams
++    // /api/stream_events for its whole lifetime.
++    delete headers['accept-encoding'];
++
++    const upstream = http.request(
++        {
++            host: FLASK_HOST,
++            port: FLASK_PORT,
++            method: req.method,
++            path: url.pathname + url.search,
++            headers
++        },
++        (backendRes) => {
++            res.writeHead(backendRes.statusCode || 502, backendRes.headers);
++            backendRes.pipe(res);
++        }
++    );
++
++    upstream.on('error', (err) => {
++        console.error(`[RENDERER HOST] Backend proxy error for ${url.pathname}: ${err.message}`);
++        if (!res.headersSent) {
++            res.writeHead(502, { 'Content-Type': 'application/json' });
++        }
++        res.end(JSON.stringify({ error: 'BACKEND_UNREACHABLE', detail: err.message }));
++    });
++
++    req.pipe(upstream);
++}
++
++function serveStatic(distDir, pathname, res) {
++    let decoded;
++    try {
++        decoded = decodeURIComponent(pathname);
++    } catch {
++        res.writeHead(400, { 'Content-Type': 'text/plain' });
++        res.end('Bad request');
++        return;
++    }
++
++    const relative = decoded === '/' ? 'index.html' : decoded.replace(/^\/+/, '');
++    const target = path.resolve(distDir, relative);
++
++    // Refuse anything that escapes dist/ -- '..' in a URL must not read the disk.
++    if (target !== distDir && !target.startsWith(distDir + path.sep)) {
++        res.writeHead(403, { 'Content-Type': 'text/plain' });
++        res.end('Forbidden');
++        return;
++    }
++
++    fs.readFile(target, (err, data) => {
++        if (err) {
++            // SPA fallback: an unknown path is a client-side route, not a 404.
++            // Guarded on the name so a missing index.html cannot recurse.
++            if (relative !== 'index.html') {
++                serveStatic(distDir, '/', res);
++                return;
++            }
++            res.writeHead(404, { 'Content-Type': 'text/plain' });
++            res.end('Not found');
++            return;
++        }
++        res.writeHead(200, {
++            'Content-Type':
++                MIME_TYPES[path.extname(target).toLowerCase()] || 'application/octet-stream',
++            'Cache-Control': 'no-store'
++        });
++        res.end(data);
++    });
++}
++
++function startRendererHost(distDir, apiToken) {
++    return new Promise((resolve, reject) => {
++        const server = http.createServer((req, res) => {
++            const url = new URL(req.url, 'http://127.0.0.1');
++            if (url.pathname.startsWith('/api/')) {
++                proxyToBackend(req, res, url, apiToken);
++            } else {
++                serveStatic(distDir, url.pathname, res);
++            }
++        });
++
++        server.once('error', reject);
++        // Port 0: let the OS pick a free one. Nothing external needs to find us,
++        // so a fixed port would only create another collision to debug.
++        server.listen(0, '127.0.0.1', () => {
++            resolve({ server, port: server.address().port });
++        });
++    });
++}
++
++async function createWindow() {
+     console.log('[ELECTRON] Inside createWindow()...');
+     try {
+         // Get screen size for HUD positioning
+@@ -108,8 +265,27 @@ function createWindow() {
+             };
+             loadWithRetry();
+         } else {
+-            console.log(`[ELECTRON] Loading local file: dist/index.html`);
+-            mainWindow.loadFile(path.join(__dirname, 'dist', 'index.html'));
++            let prodUrl = null;
++            try {
++                const distDir = path.resolve(__dirname, 'dist');
++                const { server, port } = await startRendererHost(distDir, loadOrCreateToken());
++                rendererHost = server;
++                prodUrl = `http://127.0.0.1:${port}/`;
++                console.log(`[ELECTRON] Serving dist/ on ${prodUrl}`);
++            } catch (err) {
++                console.error(`[ELECTRON] Could not start renderer host: ${err.message}`);
++            }
++
++            if (destroyed || !mainWindow) return;
++
++            if (prodUrl) {
++                mainWindow.loadURL(prodUrl);
++            } else {
++                // Last resort. Relative /api calls cannot work under file://, but
++                // showing the UI with a dead backend beats showing nothing.
++                console.warn('[ELECTRON] Falling back to file:// -- API calls will fail.');
++                mainWindow.loadFile(path.join(__dirname, 'dist', 'index.html'));
++            }
+         }
+ 
+         // Dev-only. This was previously unconditional, which opened a detached
+@@ -126,14 +302,21 @@ function createWindow() {
+     }
+ }
+ 
+-app.on('ready', () => {
++app.on('ready', async () => {
+     console.log('[ELECTRON] App ready event fired.');
+     // 1. Boot the Python Servers in the background
+     const rootDir = __dirname;
+     const godHandDir = path.join(rootDir, 'GOD_HAND_CORE');
+ 
+     // Launch the unified API server from GOD_HAND_CORE using uv
+-    startPythonService('Flask API', 'uv', ['run', 'python', 'server.py'], godHandDir);
++    if (await isPortListening(FLASK_PORT)) {
++        console.log(
++            `[SYSTEM] Flask API already listening on ${FLASK_HOST}:${FLASK_PORT}; ` +
++            'attaching instead of spawning a duplicate.'
++        );
++    } else {
++        startPythonService('Flask API', 'uv', ['run', 'python', 'server.py'], godHandDir);
++    }
+     startPythonService('Science Engine', 'uv', ['run', 'python', 'realtime_science_engine.py'], godHandDir);
+     // Use uv run to ensure GOD_HAND_CORE gets its proper virtual environment dependencies
+     startPythonService('God Hand Voice Core', 'uv', ['run', 'python', 'bot.py', '--transport', 'webrtc'], godHandDir);
+diff --git a/package.json b/package.json
+index 3f07bda..e897a7f 100644
+--- a/package.json
++++ b/package.json
+@@ -9,7 +9,8 @@
+         "build": "vite build",
+         "preview": "vite preview",
+         "lint": "eslint src",
+-        "test": "vitest run --root ./src App.test.jsx"
++        "test": "vitest run --root ./src App.test.jsx",
++        "rovodev": ".\\acli.exe rovodev"
+     },
+     "dependencies": {
+         "@react-three/drei": "^9.102.0",
+diff --git a/src/App.jsx b/src/App.jsx
+index dbcaa99..09c022c 100644
+--- a/src/App.jsx
++++ b/src/App.jsx
+@@ -162,6 +162,10 @@ function App() {
+         headers: { 'Content-Type': 'application/json' }, 
+         body: JSON.stringify({ message: msg, tool_args: toolArgs }) 
+       });
++      if (!res.ok) {
++        const text = await res.text();
++        throw new Error(`Server returned ${res.status}: ${text}`);
++      }
+       
+       const reader = res.body.getReader();
+       const decoder = new TextDecoder("utf-8");
+diff --git a/start_jester.py b/start_jester.py
+index 6388eb7..180832c 100644
+--- a/start_jester.py
++++ b/start_jester.py
+@@ -8,6 +8,19 @@ VITE_HOST = "127.0.0.1"
+ VITE_PORT = 5173
+ VITE_TIMEOUT = 30
+ 
++FLASK_HOST = "127.0.0.1"
++FLASK_PORT = 5000
++FLASK_TIMEOUT = 60
++
++
++def is_port_open(host, port, timeout=0.75):
++    """Single-shot check: is something already accepting connections there?"""
++    try:
++        with socket.create_connection((host, port), timeout=timeout):
++            return True
++    except OSError:
++        return False
++
+ 
+ def wait_for_port(host, port, timeout):
+     """Block until something accepts connections on host:port, or timeout."""
+@@ -63,21 +76,55 @@ def main():
+ 
+     print(f"[SYSTEM] Using Python: {python_exe}")
+ 
+-    # NOTE: the backend is intentionally NOT started here. main.cjs already
+-    # spawns GOD_HAND_CORE/server.py ("Flask API") on Electron's ready event,
+-    # and starting it here too made a second instance race for port 5000 and
+-    # die with EADDRINUSE. Electron owns the backend lifecycle.
++    # Start the backend here, guarded by a port check.
++    #
++    # This used to be Electron's job alone ("Electron owns the backend
++    # lifecycle") to avoid two instances racing for port 5000. That turned
++    # Electron into a single point of failure: if it failed to launch, Vite
++    # still served the UI, every /api call proxied into a dead port, and the app
++    # looked broken with no error anywhere explaining why. main.cjs now performs
++    # the same check, so whichever launcher gets there first starts the backend
++    # and the other attaches -- no duplicate, no EADDRINUSE, and no silent
++    # backend-less UI.
++    flask_process = None
++    god_hand_dir = os.path.join(base_dir, "GOD_HAND_CORE")
++    if is_port_open(FLASK_HOST, FLASK_PORT):
++        print(f"[SYSTEM] Backend already listening on {FLASK_HOST}:{FLASK_PORT}; attaching.")
++    elif not os.path.isfile(os.path.join(god_hand_dir, "server.py")):
++        print(f"[ERROR] Backend not found at {os.path.join(god_hand_dir, 'server.py')}")
++        return 1
++    else:
++        print("[SYSTEM] Starting Flask backend (GOD_HAND_CORE/server.py)...")
++        # python_exe is the GOD_HAND_CORE venv interpreter when it exists, so
++        # this does not depend on 'uv' being installed the way main.cjs does.
++        flask_process = subprocess.Popen([python_exe, "server.py"], cwd=god_hand_dir)
+ 
+     electron_path = os.path.join(base_dir, "node_modules", ".bin", "electron.cmd")
+     if not os.path.exists(electron_path):
+         print(f"[ERROR] Electron not found at {electron_path}")
+         print("[ERROR] Run 'npm install' first.")
++        if flask_process is not None:
++            stop_process_tree(flask_process, "Flask backend")
+         return 1
+ 
+     print("[SYSTEM] Starting Vite Dev Server...")
+     vite_process = subprocess.Popen(["npx", "vite"], shell=True)
+ 
+     try:
++        if flask_process is not None:
++            print(f"[SYSTEM] Waiting for backend on {FLASK_HOST}:{FLASK_PORT}...")
++            if wait_for_port(FLASK_HOST, FLASK_PORT, FLASK_TIMEOUT):
++                print("[SYSTEM] Backend is up.")
++            else:
++                # Loud, because this is exactly the failure that used to be
++                # invisible: the UI loads and then nothing works.
++                print(
++                    f"[ERROR] Backend did not bind {FLASK_HOST}:{FLASK_PORT} within "
++                    f"{FLASK_TIMEOUT}s. The UI will load but every /api call will fail."
++                )
++                if flask_process.poll() is not None:
++                    print(f"[ERROR] Backend process already exited (code {flask_process.returncode}).")
++
+         print(f"[SYSTEM] Waiting for Vite on {VITE_HOST}:{VITE_PORT}...")
+         if wait_for_port(VITE_HOST, VITE_PORT, VITE_TIMEOUT):
+             print("[SYSTEM] Vite is up.")
+@@ -93,6 +140,8 @@ def main():
+         # machine -- unrelated dev servers and editor language servers included.
+         print("[SYSTEM] Shutting down...")
+         stop_process_tree(vite_process, "Vite")
++        if flask_process is not None:
++            stop_process_tree(flask_process, "Flask backend")
+         input("Press Enter to exit...")
+ 
+     return 0
+diff --git a/vite.config.js b/vite.config.js
+index 7305906..b46cd8e 100644
+--- a/vite.config.js
++++ b/vite.config.js
+@@ -1,5 +1,27 @@
+ import { defineConfig } from 'vite'
+ import react from '@vitejs/plugin-react-swc'
++import { createRequire } from 'node:module'
++
++// The Flask backend now requires a shared token on /api/* (see
++// GOD_HAND_CORE/jester_auth.py). This config runs in Node, so it can read that
++// token from disk and inject it into every proxied request. That keeps the
++// secret out of the browser entirely and means the React app needs no changes
++// at all -- crucially including EventSource, which cannot set request headers.
++//
++// The loader lives in jester-token.cjs so Electron's main process uses the exact
++// same file-and-race logic. package.json sets "type": "module", so this config
++// is ESM and has no __dirname; createRequire bridges to the CJS helper, which
++// does.
++const require = createRequire(import.meta.url)
++const { TOKEN_FILE, loadOrCreateToken } = require('./jester-token.cjs')
++
++const apiToken = loadOrCreateToken()
++if (!apiToken) {
++  console.warn(
++    `[vite] No Jester API token available (${TOKEN_FILE}); proxied /api requests ` +
++      'will be rejected with 401. Start the backend once, or set JESTER_API_TOKEN.'
++  )
++}
+ 
+ export default defineConfig({
+   base: './',
+@@ -13,7 +35,9 @@ export default defineConfig({
+         target: 'http://127.0.0.1:5000',
+         changeOrigin: true,
+         secure: false,
+-        rewrite: (path) => path.replace(/^\/api/, '/api')
++        // Dropped a `rewrite: path => path.replace(/^\/api/, '/api')` here: it
++        // substituted '/api' for '/api', i.e. did nothing.
++        ...(apiToken ? { headers: { 'X-Jester-Token': apiToken } } : {})
+       }
+     }
+   },

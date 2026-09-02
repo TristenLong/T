@@ -127,6 +127,49 @@
       color: #00ff66;
       font-size: 10px;
     }
+    /* Token entry. The backend rejects /api/* without a shared secret and an
+       extension cannot read it off disk, so the user pastes it in once. */
+    .auth {
+      border-top: 1px solid #00ff6633;
+      padding-top: 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .auth label {
+      font-size: 10px;
+      color: #88cc99;
+      letter-spacing: 0.5px;
+    }
+    .auth-row {
+      display: flex;
+      gap: 6px;
+    }
+    .auth input {
+      flex: 1;
+      min-width: 0;
+      background: #001205;
+      color: #00ff66;
+      border: 1px solid #00ff6644;
+      border-radius: 3px;
+      padding: 7px;
+      font-family: inherit;
+      font-size: 11px;
+    }
+    .auth input:focus {
+      outline: none;
+      border-color: #00ff66;
+    }
+    .auth button {
+      width: auto;
+      flex: 0 0 auto;
+      padding: 7px 10px;
+    }
+    .auth-hint {
+      font-size: 10px;
+      color: #557a5f;
+      word-break: break-all;
+    }
   </style>
 </head>
 <body>
@@ -144,6 +187,16 @@
     </div>
     <div id="outputBox" class="output-box"></div>
   </div>
+  <div class="auth">
+    <label for="tokenInput">API TOKEN <span id="tokenState"></span></label>
+    <div class="auth-row">
+      <input id="tokenInput" type="password" autocomplete="off" spellcheck="false"
+             placeholder="paste token">
+      <button id="saveTokenBtn">SAVE</button>
+    </div>
+    <div class="auth-hint">From GOD_HAND_CORE/.jester_token</div>
+  </div>
+  <script src="jester-auth.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>

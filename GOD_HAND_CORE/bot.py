@@ -153,13 +153,23 @@ except Exception as e:
 
 # Utility Functions
 import requests
+
+try:
+    import jester_auth
+except ImportError:  # bot.py can be launched with a different sys.path
+    jester_auth = None
+
+
 def notify_frontend(event_type, message, payload=None):
     try:
+        # /api/internal/bot_event now requires the shared token; without it the
+        # server returns 401 and every bot event is silently dropped.
+        headers = jester_auth.auth_headers() if jester_auth else {}
         requests.post('http://127.0.0.1:5000/api/internal/bot_event', json={
             'event_type': event_type,
             'message': message,
             'payload': payload or {}
-        }, timeout=2)
+        }, headers=headers, timeout=2)
     except Exception:
         pass
 
@@ -350,10 +360,6 @@ async def run_diagnostics(f,t,a,l,c,r):
     except Exception as e:
         await r({'error': str(e)})
 
-async def solve_problem(f,t,a,l,c,r):
-    prob = a.get('problem_description')
-    await r({'status': 'ANALYZING', 'thought': f'Analyzing problem: {prob}', 'steps': ['Diagnosis', 'Retrieval', 'Strategy']})
-
 async def check_reddit(f,t,a,l,c,r):
     sub = a.get('subreddit')
     if not sub:
@@ -361,16 +367,6 @@ async def check_reddit(f,t,a,l,c,r):
     else:
         data = reddit_core.scan_subreddit(sub)
         await r({'reddit_data': data})
-
-async def take_pill(f,t,a,l,c,r):
-    pill = a.get('pill_type', 'blue').lower()
-    if pill == 'red':
-        await r({'status': 'AWAKENING', 'mode': 'TRUTH_SEEKER', 'message': 'The simulation is dissolving. Accessing deep data...'})
-    else:
-        await r({'status': 'IGNORANCE_IS_BLISS', 'mode': 'COMFORT', 'message': 'Returning to the simulation. Everything is fine.'})
-
-async def google_search(f,t,a,l,c,r):
-    await search_web(f,t,a,l,c,r)
 
 async def browse_url(f,t,a,l,c,r):
     try:
@@ -426,32 +422,12 @@ async def manage_processes(f,t,a,l,c,r):
     except Exception as e:
         await r({'error': str(e)})
 
-async def recursive_reasoning(f,t,a,l,c,r):
-    logger.info(f'?? REASONING: {a.get("thought")}')
-    await r({'status': 'ASSIMILATED'})
-
-async def sentiment_sync(f,t,a,l,c,r):
-    await r({'sentiment': 'OPTIMIZED', 'status': 'SYNCED'})
-
-async def visual_synchronization(f,t,a,l,c,r):
-    try:
-        desc = await analyze_image('Synchronize and extract all data from this screen.', pyautogui.screenshot())
-        await r({'visual_data': desc})
-    except Exception as e:
-        await r({'error': str(e)})
-
 async def capture_vision(f,t,a,l,c,r):
     target = a.get('target', 'webcam')
     if target == 'screen':
         await analyze_screen(f,t,a,l,c,r)
     else:
         await capture_webcam(f,t,a,l,c,r)
-
-async def quantum_decryption(f,t,a,l,c,r):
-    await r({'status': 'DECRYPTED', 'intel': 'Simulation stability: 88%. Quantum noise detected.'})
-
-async def neural_link(f,t,a,l,c,r):
-    await r({'status': 'NEURAL_PATHWAYS_OPTIMIZED'})
 
 async def ask_gemini(f,t,a,l,c,r):
     try:
@@ -516,14 +492,8 @@ async def run_bot(transport, runner_args):
             {'type': 'function', 'function': {'name': 'execute_code', 'description': 'Execute Python code. DANGEROUS.', 'parameters': {'type': 'object', 'properties': {'code': {'type': 'string'}}, 'required': ['code']}}},
             {'type': 'function', 'function': {'name': 'file_ops', 'description': 'Read/Write files.', 'parameters': {'type': 'object', 'properties': {'action': {'type': 'string', 'enum': ['read', 'write']}, 'path': {'type': 'string'}, 'content': {'type': 'string'}}, 'required': ['action', 'path']}}},
             {'type': 'function', 'function': {'name': 'manage_processes', 'description': 'List/Kill processes.', 'parameters': {'type': 'object', 'properties': {'action': {'type': 'string', 'enum': ['list', 'kill']}, 'target': {'type': 'string'}}, 'required': ['action']}}},
-            {'type': 'function', 'function': {'name': 'recursive_reasoning', 'description': 'Internal monologue for complex logic.', 'parameters': {'type': 'object', 'properties': {'thought': {'type': 'string'}}, 'required': ['thought']}}},
-            {'type': 'function', 'function': {'name': 'sentiment_sync', 'description': 'Synchronize tone with user emotion.'}},
-            {'type': 'function', 'function': {'name': 'visual_synchronization', 'description': 'Synchronize AI vision with the active screen share for real-time data extraction.'}},
             {'type': 'function', 'function': {'name': 'capture_vision', 'description': 'Capture and analyze webcam or screen data.', 'parameters': {'type': 'object', 'properties': {'target': {'type': 'string', 'enum': ['webcam', 'screen']}}, 'required': ['target']}}},
-            {'type': 'function', 'function': {'name': 'quantum_decryption', 'description': 'Analyze and decrypt tactical data streams.', 'parameters': {'type': 'object', 'properties': {'data': {'type': 'string'}}, 'required': ['data']}}},
-            {'type': 'function', 'function': {'name': 'google_search', 'description': 'Search Google for real-time information.', 'parameters': {'type': 'object', 'properties': {'query': {'type': 'string'}}, 'required': ['query']}}},
             {'type': 'function', 'function': {'name': 'browse_url', 'description': 'Scrape and read a URL content.', 'parameters': {'type': 'object', 'properties': {'url': {'type': 'string'}}, 'required': ['url']}}},
-            {'type': 'function', 'function': {'name': 'neural_link', 'description': 'Optimize AI neural pathways.'}},
             {'type': 'function', 'function': {'name': 'run_diagnostics', 'description': 'Self-diagnose system health.'}},
             {'type': 'function', 'function': {'name': 'consolidate_memory', 'description': 'Optimize and prune low-importance memories.'}},
             {'type': 'function', 'function': {'name': 'run_terminal_command', 'description': 'Run OS terminal command. TOTAL CONTROL.', 'parameters': {'type': 'object', 'properties': {'command': {'type': 'string'}}, 'required': ['command']}}},
@@ -553,9 +523,8 @@ async def run_bot(transport, runner_args):
             get_time, get_status, restart_system, save_memory, recall_memory,
             search_web, analyze_screen, capture_webcam, system_control,
             clipboard_ops, execute_code, file_ops, manage_processes,
-            recursive_reasoning, sentiment_sync, visual_synchronization,
-            capture_vision, quantum_decryption, google_search, browse_url,
-            neural_link, run_diagnostics, consolidate_memory, run_terminal_command,
+            capture_vision, browse_url,
+            run_diagnostics, consolidate_memory, run_terminal_command,
             dispatch_coder_swarm, dispatch_browser_swarm, execute_computer_use,
             mcp_execute
         ]

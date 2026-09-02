@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, Suspense, useMemo } from 'react';
+﻿import React, { useState, useEffect, useRef, Suspense, useMemo } from 'react';
 import { Canvas } from '@react-three/fiber';
 import { PerspectiveCamera, Stars } from '@react-three/drei';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -14,6 +14,7 @@ import MatrixRain from './MatrixRain';
 import MatrixHUD from './MatrixHUD';
 import SelfAwarenessTest from './components/SelfAwarenessTest';
 import ObservatoryTelemetry from './components/ObservatoryTelemetry';
+import { puter } from '@heyputer/puter.js';
 
 const theme = { 
   bg: 'transparent', 
@@ -26,6 +27,9 @@ const theme = {
   blue: '#00D2FF',
   orange: '#FF7700'
 };
+
+// Puter frontend model (OpenRouter models via puter.js, no API key needed).
+const PUTER_MODEL = 'z-ai/glm-5.3';
 
 function App() {
   const [bootSequence, setBootSequence] = useState(true);
@@ -44,8 +48,16 @@ function App() {
   const [showArsenal, setShowArsenal] = useState(false);
   const [activeCategory, setActiveCategory] = useState('ALL');
   const [executingTool, setExecutingTool] = useState(null);
+  const [showObserver, setShowObserver] = useState(false);
+  const [observerLog, setObserverLog] = useState([]);
+  const [observerInput, setObserverInput] = useState('');
+  const [observerBusy, setObserverBusy] = useState(false);
+  const observeLogRef = useRef([]);
+  const memoryScrollRef = useRef(null);
+  const responseScrollRef = useRef(null);
   
   const recognitionRef = useRef(null);
+  const inputRef = useRef(null);
   const tts = typeof window !== 'undefined' ? window.speechSynthesis : null;
   const autoRestart = useRef(false);
 
@@ -64,7 +76,7 @@ function App() {
   useEffect(() => {
     const pulse = () => {
       fetch('/api/matrix_status')
-        .then(r => r.json())
+        .then(r => r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status)))
         .then(d => { 
           setMatrixStats(d);
           setVitals({ cpu: d.cpu, ram: d.ram, status: 'THE_ONE_ONLINE', model: d.model, logic_core: d.logic_core }); 
@@ -73,7 +85,7 @@ function App() {
         .catch(() => setStatus('LOCAL_CORE_ACTIVE'));
 
       fetch('/api/stats')
-        .then(r => r.json())
+        .then(r => r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status)))
         .then(d => {
           if (!d.error) setStats(d);
         })
@@ -103,25 +115,68 @@ function App() {
       recognitionRef.current = rec;
     }
 
-    const eventSource = new EventSource('/api/stream_events');
-    eventSource.onmessage = (e) => {
-      try {
-        const data = JSON.parse(e.data);
-        if (data.type === 'new_memory') {
-          fetchHistory();
-        } else if (data.type === 'ui_alert') {
-          setResponse(`[SWARM ALERT] ${data.message}`);
-          setStatus('SWARM_ACTIVE');
+    let eventSource = null;
+    if (typeof EventSource !== 'undefined') {
+      eventSource = new EventSource('/api/stream_events');
+      eventSource.onmessage = (e) => {
+        try {
+          const data = JSON.parse(e.data);
+          if (data.type === 'new_memory') {
+            fetchHistory();
+            observe('MEMORY', 'memory store synced');
+          } else if (data.type === 'ui_alert') {
+            setResponse(`[SWARM ALERT] ${data.message}`);
+            setStatus('SWARM_ACTIVE');
+            observe('ALERT', data.message);
+          }
+        } catch (err) {
+          console.debug('SSE parse error', err);
         }
-      } catch (err) {
-        console.debug('SSE parse error', err);
-      }
-    };
+      };
+    } else {
+      console.debug('EventSource unavailable; live swarm events disabled.');
+    }
 
     return () => {
       clearInterval(int);
-      eventSource.close();
+      if (eventSource) eventSource.close();
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    // Keep the Neural Memory Stream pinned to the newest turn.
+    if (memoryScrollRef.current) {
+      memoryScrollRef.current.scrollTop = memoryScrollRef.current.scrollHeight;
+    }
+  }, [history]);
+
+  useEffect(() => {
+    // Keep the live response panel pinned to the newest text as it streams.
+    if (responseScrollRef.current) {
+      responseScrollRef.current.scrollTop = responseScrollRef.current.scrollHeight;
+    }
+  }, [response]);
+
+  const idleStatuses = ['THE_ONE_ONLINE', 'LOCAL_CORE_ACTIVE', 'PUTER_LINKED', 'FALLBACK_RESPONSE'];
+  useEffect(() => {
+    // Reclaim keyboard focus on the command input whenever the app is back to
+    // idle so a stuck streaming turn or a stale HMR frame cannot leave the UI
+    // with no way to type. Skip when the user is actively in another text
+    // field (e.g. the Observer channel).
+    const active = document.activeElement;
+    const inInput = active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA');
+    if (!inInput && inputRef.current && idleStatuses.includes(status)) {
+      requestAnimationFrame(() => inputRef.current && inputRef.current.focus({ preventScroll: true }));
+    }
+  }, [status, bootSequence]);
+
+  useEffect(() => {
+    // If a prior Puter sign-in token is still stored, push it to the backend so
+    // the Tool Arsenal is armed without needing a fresh popup.
+    if (typeof puter !== 'undefined' && puter && puter.authToken) {
+      armBackendWithPuter();
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -144,48 +199,241 @@ function App() {
     }
   };
 
+  // Persist a chat turn into the backend memory so a Puter-served reply still
+  // shows up in history and semantic recall (the backend chat paths do this via
+  // the same save_memory call internally).
+  const remember = async (role, content) => {
+    try {
+      await fetch('/api/remember', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ role, content })
+      });
+    } catch (e) {
+      console.warn('MEMORY_SAVE_FAILED', e);
+    }
+  };
+
+  // Push the Puter token (obtained after the one-time sign-in popup) to the
+  // backend so the Tool Arsenal / server-side tasks route through Puter too.
+  const armBackendWithPuter = async () => {
+    const token = puter && puter.authToken;
+    if (!token) return false;
+    try {
+      const res = await fetch('/api/configure_ai', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ puter_token: token, model: PUTER_MODEL })
+      });
+      const data = await res.json().catch(() => ({}));
+      return data.status === 'ARMED';
+    } catch (e) {
+      console.warn('ARM_PUTER_BACKEND_FAILED', e);
+      return false;
+    }
+  };
+
+  // Iron-Man style POWER-ON SELF TEST: verifies the live link between the HUD,
+  // the backend, and the Puter AI coprocessor, then arms tools if signed in.
+  const jarvisLinkTest = async () => {
+    setStatus('LINK_TEST...');
+    const lines = ['----- JESTER POWER-ON SELF TEST -----'];
+    try {
+      const r = await fetch('/api/pulse');
+      lines.push(`[${r.ok ? 'OK' : 'FAIL'}] Backend link (Flask :5000) -> ${r.ok ? 'NOMINAL' : 'DEGRADED'}`);
+    } catch {
+      lines.push('[FAIL] Backend link (Flask :5000) -> UNREACHABLE');
+    }
+    const hasPuter = typeof puter !== 'undefined' && puter.ai && typeof puter.ai.chat === 'function';
+    lines.push(`[${hasPuter ? 'OK' : 'FAIL'}] Puter AI SDK (renderer coprocessor) -> ${hasPuter ? 'LINKED' : 'MISSING'}`);
+    const token = puter && puter.authToken;
+    if (token) {
+      const armed = await armBackendWithPuter();
+      lines.push(`[${armed ? 'OK' : 'FAIL'}] Puter auth -> SIGNED IN`);
+      lines.push(`[${armed ? 'OK' : 'FAIL'}] Tool Arsenal AI route -> ${armed ? 'ARMED // PUTER' : 'NOT ARMED'}`);
+    } else {
+      lines.push('[WAIT] Puter auth -> NO TOKEN (press CONNECT PUTER once to sign in -- no key needed)');
+      lines.push('[WAIT] Tool Arsenal AI route -> awaiting Puter sign-in to arm');
+    }
+    try {
+      const st = await fetch('/api/ai_state', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ probe: true })
+      }).then(r => r.json());
+      const p = st.probe;
+      if (p && p.ok) lines.push(`[OK] AI provider live probe -> ANSWERS (${st.providers.model})`);
+      else if (p) lines.push(`[FAIL] AI provider live probe -> ${String(p.error || 'unknown').replace(/\s+/g, ' ').slice(0, 120)}`);
+      else lines.push('[WAIT] AI provider live probe -> no key armed');
+    } catch {
+      lines.push('[FAIL] AI provider live probe -> backend unreachable');
+    }
+    const report = lines.join('\n');
+    setStatus('LINK_TEST_COMPLETE');
+    setResponse(report);
+    speak('Power on self test complete. All core systems nominal, sir.');
+    return report;
+  };
+
+  const OBSERVER_SYSTEM = 'You are JESTER, the side observer AI living in this God Hand command deck (the buddy panel). You quietly watch the deck and talk with your operator like JARVIS. Be brief, dryly witty, precise, loyal. Recent chatter is provided for continuity -- you remember this app.';
+
+  const observe = (type, text) => {
+    const entry = { type, text, ts: new Date().toLocaleTimeString([], { hour12: false }) };
+    const next = [...observeLogRef.current, entry].slice(-100);
+    observeLogRef.current = next;
+    setObserverLog(next);
+  };
+
+  const observerSend = async () => {
+    const text = observerInput.trim();
+    if (!text || observerBusy) return;
+    setObserverInput('');
+    setObserverBusy(true);
+    observe('YOU', text);
+    try {
+      const buddyChat = observeLogRef.current
+        .filter(o => o.type === 'YOU' || o.type === 'JESTER')
+        .slice(-6)
+        .map(o => ({ role: o.type === 'YOU' ? 'user' : 'assistant', content: o.text }));
+      const msgs = [
+        { role: 'system', content: OBSERVER_SYSTEM },
+        ...buddyChat,
+        { role: 'user', content: text }
+      ];
+      let fullResponse = '';
+      if (typeof puter !== 'undefined' && puter.ai && typeof puter.ai.chat === 'function') {
+        const stream = await puter.ai.chat(msgs, { model: PUTER_MODEL, stream: true });
+        for await (const part of stream) {
+          const t = part && part.text;
+          if (t) fullResponse += t;
+        }
+      }
+      if (!fullResponse.trim()) throw new Error('Puter returned no content');
+      observe('JESTER', fullResponse);
+      await remember('user', '[OBSERVER] ' + text);
+      await remember('model', '[OBSERVER] ' + fullResponse);
+      await armBackendWithPuter();
+      speak(fullResponse);
+    } catch (e) {
+      console.warn('Observer channel degraded:', e);
+      observe('JESTER', '[OBSERVATION_CHANNEL_DEGRADED] ' + (e && e.message ? e.message : String(e)));
+    } finally {
+      setObserverBusy(false);
+    }
+  };
+
+  const connectPuter = async () => {
+    setStatus('PUTER_LINKING...');
+    const lines = ['----- PUTER CONNECTION -----'];
+    if (typeof puter === 'undefined' || !puter || typeof puter.auth?.signIn !== 'function') {
+      lines.push('[FAIL] Puter SDK unavailable');
+      setResponse(lines.join('\n'));
+      setStatus('THE_ONE_ONLINE');
+      return;
+    }
+    try {
+      const res = await puter.auth.signIn({ request_auth: true });
+      if (res && res.success) {
+        await armBackendWithPuter();
+        lines.push('[OK] AUTHORIZED');
+        lines.push('[OK] Token synced to backend -> Tool Arsenal + chat on Puter');
+        lines.push(`[OK] Model: ${PUTER_MODEL}`);
+        setResponse(lines.join('\n'));
+        setStatus('PUTER_LINKED');
+        observe('PTR', 'sign-in complete; backend armed', true);
+        speak('Connection established. Puter is linked, sir.');
+      } else {
+        lines.push('[WAIT] Sign-in not completed (popup may still be open)');
+        setResponse(lines.join('\n'));
+      }
+    } catch (e) {
+      lines.push('[CANCEL] ' + (e && e.message ? String(e.message).slice(0, 120) : String(e)));
+      setResponse(lines.join('\n'));
+    } finally {
+      setStatus('THE_ONE_ONLINE');
+    }
+  };
+
   const handleSend = async (msg, toolArgs = null) => {
     if (!msg || !msg.trim()) return;
     setStatus('PROCESSING_STREAM...');
     setResponse('');
+    setExecutingTool(null);
+
+    // Action words (open, launch, search, test, code, fix, find, run, browse,
+    // diagnostics, settings...) MUST hit the backend agent loop so the Tool
+    // Arsenal actually fires -- the renderer-side Puter chat is pure chat and
+    // can't invoke tools. We therefore send everything through /api/chat_stream
+    // (which runs tools and uses the Puter/GLM model once armed); renderer
+    // Puter chat remains only as a last-resort conversational fallback if the
+    // backend is unreachable.
+    //
+    // Quick "action intent" heuristic used to prefer the tool path even when
+    // the backend would rather answer plainly.
+    const actionRE = /\b(open|launch|start|search|look\s*up|find|test|run|browse|navigate|code|write|create|fix|install|diagnostic|settings|show|open\s+.*(app|browser|folder)|what\s+apps)\b/i;
+    const wantsAction = actionRE.test(msg);
+
     try {
       const res = await fetch('/api/chat_stream', { 
         method: 'POST', 
         headers: { 'Content-Type': 'application/json' }, 
-        body: JSON.stringify({ message: msg, tool_args: toolArgs }) 
+        body: JSON.stringify({ message: msg, tool_args: toolArgs, force_tool: wantsAction }) 
       });
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(`Server returned ${res.status}: ${text}`);
+      }
       
       const reader = res.body.getReader();
       const decoder = new TextDecoder("utf-8");
       let fullResponse = '';
+      let buffer = '';
+      let done = false;
 
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        
-        const chunk = decoder.decode(value, { stream: true });
-        const lines = chunk.split('\n');
-        
+      while (!done) {
+        const { value, done: readerDone } = await reader.read();
+        if (readerDone) break;
+
+        // An SSE frame can straddle a read boundary. Previously each read was
+        // split on '\n' and parsed directly, so a truncated line failed
+        // JSON.parse and was silently swallowed by the catch -- losing text.
+        // Keep the trailing partial line in `buffer` until it completes.
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() ?? '';
+
         for (const line of lines) {
-          if (line.startsWith('data: ')) {
-            const dataStr = line.replace('data: ', '').trim();
-            if (dataStr === '[DONE]') {
-               speak(fullResponse);
-               fetchHistory();
-               setStatus('THE_ONE_ONLINE');
-               break;
+          if (!line.startsWith('data: ')) continue;
+          const dataStr = line.slice(6).trim();
+
+          if (dataStr === '[DONE]') {
+            speak(fullResponse);
+            fetchHistory();
+            setStatus('THE_ONE_ONLINE');
+            done = true;
+            break;
+          }
+
+          try {
+            const data = JSON.parse(dataStr);
+            if (data.reset) {
+              // Server discarded a partial reply and is restarting on a
+              // fallback model; drop what we rendered so the two answers
+              // are not concatenated on screen.
+              fullResponse = '';
+              setResponse('');
+            } else if (data.chunk) {
+              fullResponse += data.chunk;
+              setResponse(fullResponse);
+            } else if (data.type === 'tool') {
+              const tag = data.status === 'DONE' ? '[TOOL: ' + data.tool + ' OK]' : '[TOOL: ' + data.tool + ' ...]';
+              setResponse(prev => prev + '\n' + tag);
+              observe('TOOL', data.tool + (data.status === 'DONE' ? ' -> DONE' : ' -> RUN'), true);
+            } else if (data.error) {
+              setResponse(prev => prev + '\n[ERROR: ' + data.error + ']');
             }
-            try {
-              const data = JSON.parse(dataStr);
-              if (data.chunk) {
-                fullResponse += data.chunk;
-                setResponse(fullResponse);
-              } else if (data.error) {
-                setResponse(prev => prev + '\n[ERROR: ' + data.error + ']');
-              }
-            } catch (err) {
-              console.debug(err);
-            }
+          } catch (err) {
+            console.debug('Malformed SSE frame', dataStr, err);
           }
         }
       }
@@ -254,8 +502,7 @@ function App() {
       category: 'SWARM',
       hue: theme.cyan, 
       icon: <Code2 size={16}/>, 
-      desc: 'Architect CoderCore autonomous code generator', 
-      cmd: 'dispatch coder swarm to create a high-performance script' 
+      desc: 'Build new code or fix an existing file (reads/writes the file, validates syntax)' 
     },
     { 
       id: 'browser_swarm', 
@@ -419,9 +666,11 @@ function App() {
            const resultText = `> Tool Execution Complete.\nResult:\n${data.result}`;
            setResponse(resultText);
            speak("Tool execution complete.");
+           observe('TOOL', `${tool.id} -> OK`);
         } else {
            setResponse(`> Tool Execution Failed: ${data.error}`);
            speak("Tool execution failed.");
+           observe('TOOL', `${tool.id} -> FAILED: ${data.error}`);
         }
       }
     } catch (e) {
@@ -603,6 +852,88 @@ function App() {
         )}
       </AnimatePresence>
 
+      {/* Side Bud: JESTER Observer Panel */}
+      <AnimatePresence>
+        {showObserver && (
+          <motion.div
+            initial={{ opacity: 0, x: 80 }}
+            animate={{ opacity: 1, x: 0 }}
+            exit={{ opacity: 0, x: 80 }}
+            style={{
+              position: 'fixed',
+              top: '80px',
+              right: '18px',
+              width: '330px',
+              maxHeight: '78vh',
+              boxSizing: 'border-box',
+              pointerEvents: 'auto',
+              background: 'rgba(0, 10, 2, 0.96)',
+              border: `2px solid ${theme.orange}`,
+              boxShadow: `0 0 40px ${theme.orange}44`,
+              borderRadius: '12px',
+              zIndex: 75,
+              display: 'flex',
+              flexDirection: 'column',
+              padding: '14px',
+              backdropFilter: 'blur(10px)'
+            }}
+          >
+            <div style={{ borderBottom: `1px solid ${theme.orange}44`, paddingBottom: '8px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div>
+                <h3 style={{ margin: 0, color: theme.orange, fontSize: '0.85rem', letterSpacing: '2px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <Eye size={14} color={theme.orange}/> JESTER OBSERVER
+                </h3>
+                <div style={{ fontSize: '0.65rem', color: theme.sec, marginTop: '2px' }}>side bud // talks &amp; observes the deck</div>
+              </div>
+              <button
+                onClick={() => setShowObserver(false)}
+                style={{ background: 'none', border: `1px solid ${theme.orange}`, color: theme.orange, cursor: 'pointer', padding: '2px 8px', borderRadius: '4px' }}
+              >
+                <X size={14}/>
+              </button>
+            </div>
+
+            <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', margin: '10px 0', display: 'flex', flexDirection: 'column', gap: '6px', fontSize: '0.72rem', fontFamily: 'monospace' }}>
+              {observerLog.slice().reverse().map((o, i) => (
+                <div
+                  key={i}
+                  style={{
+                    color: o.type === 'JESTER' ? theme.main : (o.type === 'ALERT' ? theme.amber : (o.type === 'TOOL' ? theme.purple : (o.type === 'MEMORY' ? theme.cyan : theme.sec))),
+                    borderLeft: `2px solid ${o.type === 'JESTER' ? theme.main : theme.orange}`,
+                    paddingLeft: '6px',
+                    whiteSpace: 'pre-wrap',
+                    wordBreak: 'break-word'
+                  }}
+                >
+                  <span style={{ opacity: 0.6 }}>[{o.ts}] [{o.type}] </span>{o.text}
+                </div>
+              ))}
+              {observerLog.length === 0 && (
+                <div style={{ color: theme.sec, opacity: 0.7 }}>Observer channel idle. Watching the deck...</div>
+              )}
+            </div>
+
+            <div style={{ display: 'flex', gap: '8px' }}>
+              <input
+                value={observerInput}
+                onChange={(e) => setObserverInput(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') observerSend(); }}
+                placeholder="talk to the bud..."
+                disabled={observerBusy}
+                style={{ flex: 1, background: 'rgba(0, 20, 10, 0.6)', border: `1px solid ${theme.sec}`, color: theme.main, padding: '8px', borderRadius: '4px', fontSize: '0.75rem', outline: 'none' }}
+              />
+              <button
+                onClick={observerSend}
+                disabled={observerBusy}
+                style={{ background: theme.orange, color: '#000', border: 'none', borderRadius: '4px', padding: '8px 12px', cursor: observerBusy ? 'default' : 'pointer', display: 'flex', alignItems: 'center' }}
+              >
+                <Send size={14}/>
+              </button>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {/* Background 3D Canvas */}
       <div style={{ position: 'absolute', inset: 0, zIndex: 0 }}>
         <Canvas>
@@ -617,9 +948,9 @@ function App() {
         <header style={{ WebkitAppRegion: 'drag', padding: '12px 25px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: 'rgba(0,10,0,0.9)', borderBottom: '1px solid ' + theme.sec, pointerEvents: 'auto' }}>
           <div>
             <h1 style={{ margin: 0, fontSize: '1.2rem', letterSpacing: '6px', color: theme.main, display: 'flex', alignItems: 'center', gap: '10px' }}>
-              <Zap size={20} color={theme.main}/> JESTER V2000: SINGULARITY (SWARM)
+              <Zap size={20} color={theme.main}/> JESTER CORE V2000: SINGULARITY (SWARM)
             </h1>
-            <div style={{ fontSize: '0.65rem', opacity: 0.8, color: theme.sec }}>MODEL: {vitals.model} | STATUS: {status}</div>
+            <div style={{ fontSize: '0.65rem', opacity: 0.8, color: theme.sec }}>AI CORE: JESTER | LLM: {vitals.model} | STATUS: {status}</div>
           </div>
           <div style={{ WebkitAppRegion: 'no-drag', display: 'flex', gap: '12px', fontSize: '0.8rem', alignItems: 'center', pointerEvents: 'auto' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '5px', color: theme.cyan }}><Cpu size={14}/> {vitals.cpu}%</div>
@@ -634,6 +965,13 @@ function App() {
             </button>
 
             <button 
+              onClick={() => setShowObserver(prev => !prev)} 
+              style={{ background: showObserver ? 'rgba(255,119,0,0.2)' : 'none', border: '1px solid ' + theme.orange, color: theme.orange, padding: '5px 12px', borderRadius: '4px', cursor: 'pointer', fontSize: '0.72rem', display: 'flex', alignItems: 'center', gap: '5px', fontWeight: 'bold' }}
+            >
+              <Eye size={13}/> OBSERVER
+            </button>
+
+            <button 
               onClick={() => setShowObservatory(prev => !prev)} 
               style={{ background: showObservatory ? 'rgba(176,38,255,0.2)' : 'none', border: '1px solid ' + theme.purple, color: theme.purple, padding: '5px 12px', borderRadius: '4px', cursor: 'pointer', fontSize: '0.72rem', display: 'flex', alignItems: 'center', gap: '5px', fontWeight: 'bold' }}
             >
@@ -645,6 +983,20 @@ function App() {
               style={{ background: showHud ? 'rgba(0,255,0,0.2)' : 'none', border: '1px solid ' + theme.sec, color: theme.main, padding: '5px 10px', borderRadius: '4px', cursor: 'pointer', fontSize: '0.72rem' }}
             >
               SWARM HUD
+            </button>
+
+            <button 
+              onClick={connectPuter} 
+              style={{ background: status === 'PUTER_LINKED' ? 'rgba(0,210,255,0.25)' : 'none', border: '1px solid ' + theme.blue, color: theme.blue, padding: '5px 12px', borderRadius: '4px', cursor: 'pointer', fontSize: '0.72rem', display: 'flex', alignItems: 'center', gap: '5px', fontWeight: 'bold' }}
+            >
+              <RefreshCw size={13}/> CONNECT PUTER
+            </button>
+
+            <button 
+              onClick={jarvisLinkTest} 
+              style={{ background: 'none', border: '1px solid ' + theme.amber, color: theme.amber, padding: '5px 12px', borderRadius: '4px', cursor: 'pointer', fontSize: '0.72rem', display: 'flex', alignItems: 'center', gap: '5px', fontWeight: 'bold' }}
+            >
+              <Activity size={13}/> LINK TEST
             </button>
 
             <button 
@@ -664,7 +1016,7 @@ function App() {
 
             <button 
               onClick={() => window.close()} 
-              title="Close JESTER"
+              title="Close JESTER CORE"
               style={{ 
                 color: '#fff', 
                 background: theme.err, 
@@ -692,7 +1044,7 @@ function App() {
                <span style={{ fontWeight: 'bold' }}>NEURAL_MEMORY_STREAM</span>
                <Activity size={12} />
             </div>
-            <div style={{ flex: 1, overflowY: 'auto', fontSize: '0.7rem' }}>
+            <div ref={memoryScrollRef} style={{ flex: 1, overflowY: 'auto', fontSize: '0.7rem' }}>
               {(history || []).map((h, i) => (
                 <div key={h.id || i} style={{ marginBottom: '10px', padding: '8px', background: 'rgba(0,0,0,0.4)', borderRadius: '4px', borderLeft: '3px solid ' + (h.role === 'user' ? theme.sec : theme.main), position: 'relative' }}>
                   <div style={{ fontWeight: 'bold', fontSize: '0.6rem', marginBottom: '3px', color: h.role === 'user' ? theme.sec : theme.main }}>{h.role.toUpperCase()}</div>
@@ -705,8 +1057,8 @@ function App() {
           {/* Center Chat & Intelligence Stage */}
           <section style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', position: 'relative' }}>
             <AnimatePresence mode='wait'>
-              <motion.div key={response} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} style={{ textAlign: 'center', maxWidth: '80%', background: 'rgba(0,0,0,0.7)', padding: '30px', borderRadius: '15px', border: '1px solid ' + theme.sec + '66', backdropFilter: 'blur(8px)', pointerEvents: 'auto' }}>
-                <div style={{ fontSize: '1.4rem', color: theme.main, textShadow: '0 0 10px ' + theme.sec, whiteSpace: 'pre-wrap' }}>{response || 'STANDBY_FOR_INPUT'}</div>  
+              <motion.div key="chat-stage" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} style={{ textAlign: 'center', maxWidth: '86%', width: '86%', background: 'rgba(0,0,0,0.7)', padding: '22px 26px', borderRadius: '15px', border: '1px solid ' + theme.sec + '66', backdropFilter: 'blur(8px)', pointerEvents: 'auto', maxHeight: '50vh', display: 'flex', flexDirection: 'column' }}>
+                <div ref={responseScrollRef} style={{ flex: 1, overflowY: 'auto', fontSize: '1.2rem', color: theme.main, textShadow: '0 0 10px ' + theme.sec, whiteSpace: 'pre-wrap', lineHeight: '1.5', textAlign: 'left' }}>{response || 'STANDBY_FOR_INPUT'}</div>  
                 {transcript && <div style={{ marginTop: '15px', fontSize: '0.9rem', color: theme.sec, opacity: 0.9 }}>{transcript}</div>}
               </motion.div>
             </AnimatePresence>
@@ -743,6 +1095,7 @@ function App() {
 
               <div style={{ display: 'flex', border: '1px solid ' + theme.sec, borderRadius: '30px', overflow: 'hidden', background: 'rgba(0,0,0,0.85)', boxShadow: '0 0 15px rgba(0,255,100,0.15)' }}>
                 <input 
+                  ref={inputRef}
                   value={input} 
                   onChange={e => setInput(e.target.value)} 
                   onKeyDown={e => e.key === 'Enter' && (handleSend(input), setInput(''))} 

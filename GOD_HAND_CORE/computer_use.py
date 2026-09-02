@@ -109,7 +109,7 @@ def auto_pilot(objective: str, max_steps: int = 10) -> str:
         if analysis.get('status') == 'error':
             return f"Auto-Pilot Failed: {analysis.get('message')}"
             
-        response_text = analysis.get('analysis', '')
+        response_text = analysis.get('analysis', '') or ""
         
         try:
             # Strip out markdown block if present
