@@ -41,4 +41,25 @@ test('renders all 5 separate bots and confirm comms action in chat interface', (
   expect(screen.getByText(/DIRECT LINK: BRUTAL CRITIC/i)).toBeInTheDocument();
 });
 
+test('renders Sentry Watcher toggle, RAM purge button, and Swarm Execute Consensus button', () => {
+  render(<App />);
+
+  const overrideBtn = screen.getByText(/OVERRIDE BOOT SEQUENCE/i);
+  fireEvent.click(overrideBtn);
+
+  // Sentry toggle button
+  const sentryBtn = screen.getByRole('button', { name: /SENTRY:/i });
+  expect(sentryBtn).toBeInTheDocument();
+  fireEvent.click(sentryBtn);
+
+  // RAM purge button
+  expect(screen.getByText(/PURGE/i)).toBeInTheDocument();
+
+  // Execute consensus button
+  const execBtn = screen.getByRole('button', { name: /EXECUTE CONSENSUS/i });
+  expect(execBtn).toBeInTheDocument();
+  fireEvent.click(execBtn);
+});
+
+
 

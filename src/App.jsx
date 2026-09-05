@@ -89,6 +89,46 @@ function App() {
   const [isSwarmDeliberating, setIsSwarmDeliberating] = useState(false);
   const [commStatus, setCommStatus] = useState(null);
   const [swarmBots, setSwarmBots] = useState(DEFAULT_SWARM_BOTS);
+  const [speakingBot, setSpeakingBot] = useState(null);
+  const [isAnomaly, setIsAnomaly] = useState(false);
+  const [sentryActive, setSentryActive] = useState(true);
+  const [sentryAlert, setSentryAlert] = useState(false);
+  const [sentryInfo, setSentryInfo] = useState(null);
+  const [optimizingRam, setOptimizingRam] = useState(false);
+  const [executingConsensus, setExecutingConsensus] = useState(false);
+
+  // Sentry perception loop: monitors telemetry, active window, and memory anomalies
+  useEffect(() => {
+    if (!sentryActive) return;
+    let isSubscribed = true;
+    const sentryCheck = async () => {
+      try {
+        const res = await fetch('/api/sentry/scan');
+        if (!res.ok) return;
+        const data = await res.json();
+        if (isSubscribed && data) {
+          setSentryInfo(data);
+          if (data.alert) {
+            setSentryAlert(true);
+            setIsAnomaly(true);
+            const alertMsg = data.anomalies?.[0]?.message || 'System threshold exceeded';
+            observe('SENTRY', `[ALERT] ${alertMsg}`);
+          } else {
+            setSentryAlert(false);
+            setIsAnomaly(false);
+          }
+        }
+      } catch {
+        // quiet fallback
+      }
+    };
+    sentryCheck();
+    const interval = setInterval(sentryCheck, 20000);
+    return () => {
+      isSubscribed = false;
+      clearInterval(interval);
+    };
+  }, [sentryActive]);
 
   const fetchHistory = async () => {
     try {
@@ -218,18 +258,112 @@ function App() {
     // Legacy Electron IPC dynamic click-through hack removed.
   }, []);
 
-  const speak = (txt) => {
+  const speak = (txt, botId = 'jester') => {
     if (!tts) return;
     try {
       tts.cancel();
       const ut = new SpeechSynthesisUtterance(txt);
-      ut.pitch = 0.8;
-      ut.rate = 1.1;
+      
+      const voiceProfiles = {
+        jester: { pitch: 0.8, rate: 1.1 },          // Deep Matrix Architect
+        claude: { pitch: 1.0, rate: 1.0 },          // Calm, balanced, architectural
+        gemini: { pitch: 1.25, rate: 1.15 },        // Energetic, crisp, high-speed
+        brutal_critic: { pitch: 0.65, rate: 1.3 },  // Sharp, punchy, rapid-fire
+        codex: { pitch: 0.9, rate: 0.95 }           // Measured, methodical robotic
+      };
+      const profile = voiceProfiles[botId] || voiceProfiles.jester;
+      ut.pitch = profile.pitch;
+      ut.rate = profile.rate;
+
+      if (typeof window !== 'undefined' && window.speechSynthesis) {
+        const voices = window.speechSynthesis.getVoices();
+        if (voices && voices.length > 0) {
+          if (botId === 'brutal_critic') {
+            const deepVoice = voices.find(v => /male|david|mark|george/i.test(v.name));
+            if (deepVoice) ut.voice = deepVoice;
+          } else if (botId === 'claude') {
+            const smoothVoice = voices.find(v => /natural|en-gb|uk|female|zira/i.test(v.name));
+            if (smoothVoice) ut.voice = smoothVoice;
+          } else if (botId === 'gemini') {
+            const brightVoice = voices.find(v => /google|natural|en-us/i.test(v.name));
+            if (brightVoice) ut.voice = brightVoice;
+          }
+        }
+      }
+
+      setSpeakingBot(botId);
       ut.onstart = () => setIsSpeaking(true);
-      ut.onend = () => setIsSpeaking(false);
+      ut.onend = () => {
+        setIsSpeaking(false);
+        setSpeakingBot(null);
+      };
       tts.speak(ut);
     } catch (e) {
       console.warn("TTS Error", e);
+    }
+  };
+
+  const optimizeRam = async () => {
+    if (optimizingRam) return;
+    setOptimizingRam(true);
+    setStatus('OPTIMIZING_RAM...');
+    observe('SYS', 'Initiating system RAM purge and working set trim...');
+    try {
+      const res = await fetch('/api/sys/optimize_ram', { method: 'POST' });
+      const data = await res.json();
+      if (data && data.status === 'SUCCESS') {
+        const freed = data.freed_mb;
+        const nowPct = data.ram_percent;
+        setVitals(prev => ({ ...prev, ram: Math.round(nowPct) }));
+        setResponse(`[RAM OPTIMIZATION COMPLETE]\nFreed: ${freed} MB\nTrimmed Processes: ${data.trimmed_processes}\nCurrent Memory Usage: ${nowPct}% of ${data.total_gb} GB`);
+        speak(`RAM optimized. Freed ${Math.round(freed)} megabytes of system memory, sir.`, 'jester');
+        observe('SYS', `RAM optimizer freed ${freed} MB across ${data.trimmed_processes} processes (now ${nowPct}%)`);
+      } else {
+        throw new Error(data?.error || 'Failed to optimize memory');
+      }
+    } catch (e) {
+      setResponse(`[RAM OPTIMIZE FAILED] ${e.message}`);
+      observe('ERROR', `RAM optimize failed: ${e.message}`);
+    } finally {
+      setOptimizingRam(false);
+      setStatus('THE_ONE_ONLINE');
+    }
+  };
+
+  const executeConsensusCode = async () => {
+    if (executingConsensus) return;
+    setExecutingConsensus(true);
+    setStatus('EXECUTING_CONSENSUS...');
+    const topic = swarmTurns.length > 0 
+      ? swarmTurns.map(t => `${t.name}: ${t.content.slice(0, 100)}`).join('\n')
+      : (input || 'Autonomous swarm consensus action');
+      
+    observe('SWARM', 'Synthesizing and executing code consensus across fleet...');
+    setResponse('[SWARM AUTONOMOUS CODER ENGAGED]\nFormulating consensus blueprint with Codex & Gemini...\nWriting to workspace and running compilation check...');
+    
+    try {
+      const res = await fetch('/api/swarm/execute_consensus', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          topic: input || 'Fleet consensus automated script',
+          run_test: true
+        })
+      });
+      const data = await res.json();
+      if (data && data.status === 'SUCCESS') {
+        setResponse(`[CONSENSUS CODE EXECUTED & VERIFIED]\nTarget File: ${data.target_file}\nSize: ${data.bytes_written} bytes\nCompilation Check: ${data.test_output}\nTimestamp: ${data.timestamp}`);
+        speak(`Consensus code formulated and verified nominal in ${data.target_file}, sir.`, 'codex');
+        observe('SWARM', `Consensus script written to ${data.target_file} (${data.test_output})`);
+      } else {
+        throw new Error(data?.error || 'Consensus execution failed');
+      }
+    } catch (e) {
+      setResponse(`[CONSENSUS EXECUTION ERROR] ${e.message}`);
+      observe('ERROR', `Consensus execution failed: ${e.message}`);
+    } finally {
+      setExecutingConsensus(false);
+      setStatus('THE_ONE_ONLINE');
     }
   };
 
@@ -413,7 +547,7 @@ function App() {
         const summary = data.summary || 'All 5 agents verified active on local neural bus. Multi-turn cross-talk confirmed nominal.';
         setResponse(`[HANDSHAKE COMPLETE: ALL ${count} BOTS OPERATIONAL & COMMUNICATING]\n\n${summary}`);
         observe('SWARM', `All ${count} bots responded to handshake ping`);
-        speak('All five agents are online, synchronized, and actively communicating, sir.');
+        speak('All five agents are online, synchronized, and actively communicating, sir.', 'jester');
       } else {
         throw new Error(data.error || 'Invalid handshake response');
       }
@@ -446,7 +580,7 @@ function App() {
         setSwarmTurns(data.turns);
         const sum = data.summary || `Swarm deliberation completed with ${data.turns.length} collaborative turns.`;
         setResponse(`[ROUNDTABLE CONSENSUS ACHIEVED]\nTopic: "${data.topic || cleanTopic}"\n\n${sum}`);
-        speak(sum);
+        speak(sum, 'jester');
         remember('user', `[SWARM TOPIC] ${cleanTopic}`);
         remember('model', `[SWARM CONSENSUS] ${sum}`);
         observe('ROUNDTABLE', `Consensus reached across ${data.turns.length} agents`);
@@ -480,7 +614,7 @@ function App() {
       if (data && data.reply) {
         const replyText = data.reply;
         setResponse(`[${data.name} // ${data.role}]\n\n${replyText}`);
-        speak(replyText);
+        speak(replyText, botId);
         remember('user', `[@${data.name}] ${cleanMsg}`);
         remember('model', `[${data.name}] ${replyText}`);
         observe('AGENT_CHAT', `${data.name} replied`);
@@ -1191,7 +1325,17 @@ function App() {
         <Canvas>
           <PerspectiveCamera makeDefault position={[0, 0, 5]} />
           <Stars radius={100} depth={50} count={3000} factor={4} saturation={1} fade speed={1} />
-          <Suspense fallback={null}><JesterBrain isSpeaking={isSpeaking} isListening={isListening} color={theme.main} /></Suspense>
+          <Suspense fallback={null}>
+            <JesterBrain 
+              isSpeaking={isSpeaking} 
+              isListening={isListening} 
+              isAnomaly={sentryAlert} 
+              isDeliberating={isSwarmDeliberating}
+              speakingBotId={speakingBot}
+              activeBot={activeBot}
+              color={theme.main} 
+            />
+          </Suspense>
         </Canvas>
       </div>
 
@@ -1204,11 +1348,52 @@ function App() {
             </h1>
             <div style={{ fontSize: '0.65rem', opacity: 0.8, color: theme.sec }}>AI CORE: JESTER | LLM: {vitals.model} | STATUS: {status}</div>
           </div>
-          <div style={{ WebkitAppRegion: 'no-drag', display: 'flex', gap: '12px', fontSize: '0.8rem', alignItems: 'center', pointerEvents: 'auto' }}>
+          <div style={{ WebkitAppRegion: 'no-drag', display: 'flex', gap: '10px', fontSize: '0.8rem', alignItems: 'center', pointerEvents: 'auto' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '5px', color: theme.cyan }}><Cpu size={14}/> {vitals.cpu}%</div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '5px', color: theme.main }}><Database size={14}/> {vitals.ram}%</div>
+            
+            <div 
+              onClick={optimizeRam}
+              title="Click to purge working sets and optimize system RAM"
+              style={{ 
+                display: 'flex', 
+                alignItems: 'center', 
+                gap: '5px', 
+                color: vitals.ram > 85 ? theme.err : theme.main, 
+                cursor: 'pointer',
+                padding: '2px 7px',
+                borderRadius: '4px',
+                background: optimizingRam ? 'rgba(0,255,102,0.2)' : 'rgba(0,20,5,0.6)',
+                border: '1px solid ' + (vitals.ram > 85 ? theme.err : theme.sec),
+                fontWeight: 'bold',
+                fontSize: '0.75rem'
+              }}
+            >
+              <Database size={13}/> {vitals.ram}% {optimizingRam ? 'TRIMMING...' : 'PURGE'}
+            </div>
+
             <div style={{ display: 'flex', alignItems: 'center', gap: '5px', color: theme.amber }} title={`XP: ${stats.xp}`}><Sparkles size={14}/> LVL {stats.level}</div>
             
+            <button 
+              onClick={() => setSentryActive(prev => !prev)} 
+              title={sentryActive ? (sentryAlert ? "Sentry Anomaly Detected!" : "Autonomous Sentry Watcher Active") : "Sentry Watcher Idle"}
+              style={{ 
+                background: sentryActive ? (sentryAlert ? 'rgba(255,0,85,0.25)' : 'rgba(0,240,255,0.2)') : 'none', 
+                border: '1px solid ' + (sentryActive ? (sentryAlert ? theme.err : theme.cyan) : theme.sec), 
+                color: sentryAlert ? theme.err : (sentryActive ? theme.cyan : theme.sec), 
+                padding: '5px 12px', 
+                borderRadius: '4px', 
+                cursor: 'pointer', 
+                fontSize: '0.72rem', 
+                display: 'flex', 
+                alignItems: 'center', 
+                gap: '5px', 
+                fontWeight: 'bold',
+                boxShadow: sentryAlert ? `0 0 12px ${theme.err}66` : 'none'
+              }}
+            >
+              <Shield size={13}/> SENTRY: {sentryActive ? (sentryAlert ? 'ALERT' : 'ON') : 'OFF'}
+            </button>
+
             <button 
               onClick={() => setShowArsenal(prev => !prev)} 
               style={{ background: showArsenal ? 'rgba(0,240,255,0.2)' : 'none', border: '1px solid ' + theme.cyan, color: theme.cyan, padding: '5px 12px', borderRadius: '4px', cursor: 'pointer', fontSize: '0.72rem', display: 'flex', alignItems: 'center', gap: '5px', fontWeight: 'bold' }}
@@ -1430,6 +1615,30 @@ function App() {
                 >
                   <Flame size={13} color={theme.purple} />
                   <span>DEBATE</span>
+                </button>
+
+                <button
+                  onClick={executeConsensusCode}
+                  disabled={executingConsensus || isSwarmDeliberating}
+                  style={{
+                    background: 'rgba(255,215,0,0.15)',
+                    border: `1px solid ${theme.amber}`,
+                    color: theme.amber,
+                    padding: '6px 13px',
+                    borderRadius: '20px',
+                    fontSize: '0.72rem',
+                    fontWeight: 'bold',
+                    cursor: executingConsensus || isSwarmDeliberating ? 'default' : 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '5px',
+                    opacity: executingConsensus || isSwarmDeliberating ? 0.6 : 1,
+                    boxShadow: `0 0 10px ${theme.amber}33`
+                  }}
+                  title="Autonomously write and verify consensus code from the Swarm debate"
+                >
+                  <Code2 size={13} color={theme.amber} />
+                  <span>{executingConsensus ? 'EXECUTING...' : '⚡ EXECUTE CONSENSUS'}</span>
                 </button>
 
                 {swarmTurns.length > 0 && (

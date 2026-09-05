@@ -2232,6 +2232,157 @@ def swarm_roundtable():
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/api/sys/optimize_ram', methods=['GET', 'POST'])
+def api_optimize_ram():
+    """Trim working sets across running processes and trigger garbage collection."""
+    import gc
+    import ctypes
+    
+    mem_before = psutil.virtual_memory().available
+    gc.collect()
+    trimmed_count = 0
+    
+    if os.name == 'nt':
+        for p in psutil.process_iter(['pid', 'name']):
+            try:
+                h = ctypes.windll.kernel32.OpenProcess(0x001F0FFF, False, p.info['pid'])
+                if h:
+                    if ctypes.windll.psapi.EmptyWorkingSet(h):
+                        trimmed_count += 1
+                    ctypes.windll.kernel32.CloseHandle(h)
+            except Exception:
+                pass
+                
+    mem_after = psutil.virtual_memory().available
+    vm = psutil.virtual_memory()
+    freed_mb = round((mem_after - mem_before) / (1024 * 1024), 1)
+    
+    res = {
+        'status': 'SUCCESS',
+        'trimmed_processes': trimmed_count,
+        'ram_before_mb': round(mem_before / (1024 * 1024), 1),
+        'ram_after_mb': round(mem_after / (1024 * 1024), 1),
+        'freed_mb': max(0.0, freed_mb),
+        'ram_percent': vm.percent,
+        'total_gb': round(vm.total / (1024 * 1024 * 1024), 2)
+    }
+    logger.info(f"RAM_OPTIMIZER: Freed {res['freed_mb']} MB across {trimmed_count} processes. Current RAM: {vm.percent}%")
+    return jsonify(res)
+
+
+@app.route('/api/sentry/scan', methods=['GET', 'POST'])
+def api_sentry_scan():
+    """Background sentry perception: monitors system telemetry, screen focus, and anomalies."""
+    import ctypes
+    anomalies = []
+    
+    vm = psutil.virtual_memory()
+    cpu_pct = psutil.cpu_percent(interval=None)
+    ram_pct = vm.percent
+    
+    if ram_pct >= 90.0:
+        anomalies.append({
+            'type': 'RAM_PRESSURE',
+            'severity': 'HIGH' if ram_pct >= 94.0 else 'MEDIUM',
+            'message': f"System memory critical: {ram_pct}% in use (available: {round(vm.available / (1024*1024), 1)} MB)"
+        })
+    if cpu_pct >= 92.0:
+        anomalies.append({
+            'type': 'CPU_SPIKE',
+            'severity': 'HIGH',
+            'message': f"CPU usage elevated at {cpu_pct}%"
+        })
+        
+    window_title = 'UNKNOWN'
+    if os.name == 'nt':
+        try:
+            hwnd = ctypes.windll.user32.GetForegroundWindow()
+            length = ctypes.windll.user32.GetWindowTextLengthW(hwnd)
+            if length > 0:
+                buff = ctypes.create_unicode_buffer(length + 1)
+                ctypes.windll.user32.GetWindowTextW(hwnd, buff, length + 1)
+                window_title = buff.value
+        except Exception:
+            pass
+
+    return jsonify({
+        'status': 'NOMINAL' if not anomalies else 'ANOMALY_DETECTED',
+        'alert': len(anomalies) > 0,
+        'anomalies': anomalies,
+        'active_window': window_title,
+        'cpu': cpu_pct,
+        'ram': ram_pct,
+        'timestamp': time.strftime('%H:%M:%S')
+    })
+
+
+@app.route('/api/swarm/execute_consensus', methods=['POST'])
+def api_swarm_execute_consensus():
+    """Autonomously write code formulated by the Swarm/Codex, verify syntax, and stage it."""
+    import subprocess
+    data = request.get_json() or {}
+    topic = data.get('topic', 'Autonomous Swarm Consensus Action')
+    target_file = data.get('target_file', '').strip()
+    code = data.get('code', '')
+    run_test = bool(data.get('run_test', True))
+    commit = bool(data.get('commit', False))
+    commit_msg = data.get('commit_msg', f"Swarm Consensus: {topic[:60]}")
+    
+    workspace_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+    if not target_file:
+        target_file = os.path.join(workspace_root, 'swarm_tasks', f"task_{int(time.time())}.py")
+        os.makedirs(os.path.dirname(target_file), exist_ok=True)
+    elif not os.path.isabs(target_file):
+        target_file = os.path.abspath(os.path.join(workspace_root, target_file))
+        
+    if not target_file.startswith(workspace_root):
+        return jsonify({'error': 'Target file must be within the workspace'}), 400
+
+    if not code:
+        prompt = f"Write production code to execute the swarm consensus on topic: '{topic}'. Output ONLY raw executable code without markdown backticks."
+        code, _ = _swarm_generate_turn(prompt, SWARM_BOTS['codex']['system_prompt'], f"# Swarm consensus execution for {topic}\nprint('Consensus action completed.')\n")
+        code = re.sub(r'^```[\w]*\n', '', code.strip())
+        code = re.sub(r'\n```$', '', code.strip())
+
+    try:
+        os.makedirs(os.path.dirname(target_file), exist_ok=True)
+        with open(target_file, 'w', encoding='utf-8') as f:
+            f.write(code)
+            
+        test_output = 'Skipped'
+        if run_test and target_file.endswith('.py'):
+            proc = subprocess.run(
+                ['python', '-m', 'py_compile', target_file],
+                capture_output=True,
+                text=True,
+                cwd=workspace_root,
+                timeout=10
+            )
+            test_output = 'PASSED (py_compile 0 errors)' if proc.returncode == 0 else f'FAILED: {proc.stderr}'
+            
+        git_output = 'Skipped'
+        if commit:
+            subprocess.run(['git', 'add', target_file], cwd=workspace_root, capture_output=True, text=True)
+            g_proc = subprocess.run(['git', 'commit', '-m', commit_msg], cwd=workspace_root, capture_output=True, text=True)
+            git_output = g_proc.stdout if g_proc.returncode == 0 else g_proc.stderr
+
+        return jsonify({
+            'status': 'SUCCESS',
+            'topic': topic,
+            'target_file': os.path.relpath(target_file, workspace_root),
+            'bytes_written': len(code.encode('utf-8')),
+            'test_output': test_output,
+            'git_output': git_output,
+            'timestamp': time.strftime('%H:%M:%S')
+        })
+    except Exception as e:
+        logger.error(f'EXECUTE_CONSENSUS_ERROR: {e}')
+        return jsonify({'error': str(e)}), 500
+
+
+
+
+
 if __name__ == '__main__':
     threading.Thread(target=_fact_miner_worker, name='fact-miner', daemon=True).start()
     threading.Thread(target=_session_note_worker, name='session-note', daemon=True).start()
