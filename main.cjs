@@ -1,3 +1,4 @@
+process.env['ELECTRON_DISABLE_SECURITY_WARNINGS'] = 'true';
 const { app, BrowserWindow, screen, globalShortcut, ipcMain } = require('electron');
 const { spawn } = require('child_process');
 const fs = require('node:fs');

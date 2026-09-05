@@ -14,15 +14,28 @@ import MatrixRain from './MatrixRain';
 import MatrixHUD from './MatrixHUD';
 import SelfAwarenessTest from './components/SelfAwarenessTest';
 import ObservatoryTelemetry from './components/ObservatoryTelemetry';
-import { puter } from '@heyputer/puter.js';
-
-if (typeof puter !== 'undefined' && puter) {
-  try {
-    puter.quiet = true;
-  } catch {
-    // quiet fallback
+// Resilient, lazy-loaded Puter SDK accessor (prevents premature WebSockets & unsafe headers)
+let _puterCache = null;
+const getPuter = async () => {
+  if (_puterCache) return _puterCache;
+  if (typeof window !== 'undefined' && window.puter) {
+    _puterCache = window.puter;
+    return _puterCache;
   }
-}
+  try {
+    globalThis.PUTER_QUIET = true;
+    const mod = await import('@heyputer/puter.js');
+    _puterCache = mod.puter;
+    if (_puterCache) {
+      _puterCache.quiet = true;
+    }
+    return _puterCache;
+  } catch (e) {
+    console.warn('[Puter] Lazy-load bypassed:', e);
+    return null;
+  }
+};
+
 
 const theme = { 
   bg: 'transparent', 
@@ -353,9 +366,9 @@ function App() {
   }, [status, bootSequence]);
 
   useEffect(() => {
-    // If a prior Puter sign-in token is still stored, push it to the backend so
-    // the Tool Arsenal is armed without needing a fresh popup.
-    if (typeof puter !== 'undefined' && puter && puter.authToken) {
+    // If a prior Puter sign-in token is still stored in localStorage, arm backend
+    const savedToken = typeof localStorage !== 'undefined' && (localStorage.getItem('puter_auth_token') || localStorage.getItem('puter.auth.token'));
+    if (savedToken) {
       armBackendWithPuter();
     }
   }, []);
@@ -657,7 +670,8 @@ function App() {
   // Push the Puter token (obtained after the one-time sign-in popup) to the
   // backend so the Tool Arsenal / server-side tasks route through Puter too.
   const armBackendWithPuter = async () => {
-    const token = puter && puter.authToken;
+    const p = await getPuter();
+    const token = (p && p.authToken) || (typeof localStorage !== 'undefined' && (localStorage.getItem('puter_auth_token') || localStorage.getItem('puter.auth.token')));
     if (!token) return false;
     try {
       const res = await fetch('/api/configure_ai', {
@@ -684,9 +698,10 @@ function App() {
     } catch {
       lines.push('[FAIL] Backend link (Flask :5000) -> UNREACHABLE');
     }
-    const hasPuter = typeof puter !== 'undefined' && puter.ai && typeof puter.ai.chat === 'function';
+    const p = await getPuter();
+    const hasPuter = p && p.ai && typeof p.ai.chat === 'function';
     lines.push(`[${hasPuter ? 'OK' : 'FAIL'}] Puter AI SDK (renderer coprocessor) -> ${hasPuter ? 'LINKED' : 'MISSING'}`);
-    const token = puter && puter.authToken;
+    const token = (p && p.authToken) || (typeof localStorage !== 'undefined' && (localStorage.getItem('puter_auth_token') || localStorage.getItem('puter.auth.token')));
     if (token) {
       const armed = await armBackendWithPuter();
       lines.push(`[${armed ? 'OK' : 'FAIL'}] Puter auth -> SIGNED IN`);
@@ -741,8 +756,9 @@ function App() {
         { role: 'user', content: text }
       ];
       let fullResponse = '';
-      if (typeof puter !== 'undefined' && puter.ai && typeof puter.ai.chat === 'function') {
-        const stream = await puter.ai.chat(msgs, { model: PUTER_MODEL, stream: true });
+      const p = await getPuter();
+      if (p && p.ai && typeof p.ai.chat === 'function') {
+        const stream = await p.ai.chat(msgs, { model: PUTER_MODEL, stream: true });
         for await (const part of stream) {
           const t = part && part.text;
           if (t) fullResponse += t;
@@ -765,14 +781,15 @@ function App() {
   const connectPuter = async () => {
     setStatus('PUTER_LINKING...');
     const lines = ['----- PUTER CONNECTION -----'];
-    if (typeof puter === 'undefined' || !puter || typeof puter.auth?.signIn !== 'function') {
+    const p = await getPuter();
+    if (!p || typeof p.auth?.signIn !== 'function') {
       lines.push('[FAIL] Puter SDK unavailable');
       setResponse(lines.join('\n'));
       setStatus('THE_ONE_ONLINE');
       return;
     }
     try {
-      const res = await puter.auth.signIn({ request_auth: true });
+      const res = await p.auth.signIn({ request_auth: true });
       if (res && res.success) {
         await armBackendWithPuter();
         lines.push('[OK] AUTHORIZED');
