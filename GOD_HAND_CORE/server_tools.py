@@ -166,6 +166,9 @@ def search_web(query: str) -> str:
     except Exception as e:
         return f"Search Error: {e}"
 
+web_search = search_web
+
+
 def diagnostics_report() -> str:
     """Run the full system diagnostic suite and return the report (status, keys, internet, stress test)."""
     try:

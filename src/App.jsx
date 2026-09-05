@@ -197,6 +197,11 @@ function App() {
   const [executingConsensus, setExecutingConsensus] = useState(false);
   const [isRunningPipeline, setIsRunningPipeline] = useState(false);
   const [pipelineStage, setPipelineStage] = useState('');
+  const [showCodeVault, setShowCodeVault] = useState(false);
+  const [vaultTasks, setVaultTasks] = useState([]);
+  const [loadingVault, setLoadingVault] = useState(false);
+  const [runningTaskId, setRunningTaskId] = useState(null);
+  const [taskRunResults, setTaskRunResults] = useState({});
 
   // Sentry perception loop: monitors telemetry, active window, and memory anomalies
   useEffect(() => {
@@ -653,6 +658,44 @@ function App() {
       setStatus('THE_ONE_ONLINE');
     }
   };
+
+  const fetchVaultTasks = async () => {
+    setLoadingVault(true);
+    try {
+      const res = await fetch('/api/swarm/tasks');
+      if (res.ok) {
+        const data = await res.json();
+        setVaultTasks(data.tasks || []);
+      }
+    } catch (e) {
+      console.warn('Failed to fetch swarm vault tasks:', e);
+    } finally {
+      setLoadingVault(false);
+    }
+  };
+
+  const runVaultTask = async (task) => {
+    setRunningTaskId(task.filename);
+    try {
+      const res = await fetch('/api/swarm/run_task', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ task_file: task.rel_path })
+      });
+      const data = await res.json();
+      setTaskRunResults(prev => ({ ...prev, [task.filename]: data }));
+      if (data.status === 'PASSED') {
+        observe('SWARM_VAULT', `[VERIFIED] ${task.filename} passed in ${data.duration_ms}ms`);
+      } else {
+        observe('SWARM_VAULT', `[FAILED] ${task.filename}: ${data.stderr || data.error || 'Execution failure'}`);
+      }
+    } catch (e) {
+      setTaskRunResults(prev => ({ ...prev, [task.filename]: { status: 'ERROR', error: e.message } }));
+    } finally {
+      setRunningTaskId(null);
+    }
+  };
+
 
   // Persist a chat turn into the backend memory so a Puter-served reply still
   // shows up in history and semantic recall (the backend chat paths do this via
@@ -2021,6 +2064,35 @@ function App() {
                       <span>{isRunningPipeline ? (pipelineStage || 'PIPELINE RUNNING...') : '🚀 RUN FULL PIPELINE'}</span>
                     </button>
 
+                    <button
+                      onClick={() => {
+                        setShowCodeVault(prev => {
+                          const next = !prev;
+                          if (next) fetchVaultTasks();
+                          return next;
+                        });
+                      }}
+                      style={{
+                        background: showCodeVault ? 'rgba(0,240,255,0.25)' : 'rgba(0,20,10,0.85)',
+                        border: `1px solid ${theme.cyan}`,
+                        color: theme.cyan,
+                        padding: '6px 13px',
+                        borderRadius: '20px',
+                        fontSize: '0.72rem',
+                        fontWeight: 'bold',
+                        cursor: 'pointer',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '5px',
+                        boxShadow: `0 0 10px ${theme.cyan}33`
+                      }}
+                      title="Inspect and run verified swarm tasks in the Swarm Code Vault"
+                    >
+                      <Terminal size={13} color={theme.cyan} />
+                      <span>CODE VAULT</span>
+                    </button>
+
+
                     {(isSpeaking || isAutoReading) && (
                       <div
                         style={{
@@ -2433,6 +2505,167 @@ function App() {
               </button>
             </div>
           </section>
+        {/* Swarm Code Vault Overlay Modal */}
+        {showCodeVault && (
+          <div
+            style={{
+              position: 'fixed',
+              top: '70px',
+              left: '50%',
+              transform: 'translateX(-50%)',
+              width: '92%',
+              maxWidth: '920px',
+              maxHeight: '78vh',
+              background: 'rgba(2, 12, 6, 0.96)',
+              border: `2px solid ${theme.cyan}`,
+              borderRadius: '12px',
+              boxShadow: `0 0 35px ${theme.cyan}44`,
+              backdropFilter: 'blur(14px)',
+              zIndex: 9999,
+              display: 'flex',
+              flexDirection: 'column',
+              overflow: 'hidden',
+              pointerEvents: 'auto'
+            }}
+          >
+            <div
+              style={{
+                padding: '12px 18px',
+                borderBottom: `1px solid ${theme.cyan}44`,
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                background: 'rgba(0, 30, 20, 0.7)'
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <Terminal size={18} color={theme.cyan} />
+                <span style={{ color: theme.cyan, fontWeight: 'bold', letterSpacing: '1px', fontSize: '0.88rem' }}>
+                  SWARM CODE VAULT // AUTONOMOUS ARTIFACT RUNNER
+                </span>
+                <span style={{ color: '#888', fontSize: '0.72rem' }}>
+                  ({vaultTasks.length} artifacts verified)
+                </span>
+              </div>
+              <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                <button
+                  onClick={fetchVaultTasks}
+                  disabled={loadingVault}
+                  style={{
+                    background: 'rgba(0,240,255,0.1)',
+                    border: `1px solid ${theme.cyan}66`,
+                    color: theme.cyan,
+                    padding: '4px 10px',
+                    borderRadius: '4px',
+                    fontSize: '0.72rem',
+                    cursor: 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '4px'
+                  }}
+                >
+                  <RefreshCw size={12} />
+                  <span>REFRESH</span>
+                </button>
+                <button
+                  onClick={() => setShowCodeVault(false)}
+                  style={{
+                    background: 'none',
+                    border: 'none',
+                    color: '#FFF',
+                    cursor: 'pointer',
+                    padding: '4px'
+                  }}
+                >
+                  <X size={18} />
+                </button>
+              </div>
+            </div>
+
+            <div style={{ flex: 1, overflowY: 'auto', padding: '15px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+              {vaultTasks.length === 0 ? (
+                <div style={{ color: '#888', textAlign: 'center', padding: '30px', fontSize: '0.85rem' }}>
+                  {loadingVault ? 'SCANNING SWARM_TASKS DIRECTORY...' : 'NO SWARM TASKS FOUND. RUN A PIPELINE OR DELIBERATION FIRST.'}
+                </div>
+              ) : (
+                vaultTasks.map(task => {
+                  const result = taskRunResults[task.filename];
+                  const isRunning = runningTaskId === task.filename;
+                  return (
+                    <div
+                      key={task.filename}
+                      style={{
+                        background: 'rgba(0, 15, 8, 0.85)',
+                        border: `1px solid ${result ? (result.status === 'PASSED' ? theme.main : theme.err) : 'rgba(0,255,100,0.2)'}`,
+                        borderRadius: '6px',
+                        padding: '12px',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: '8px'
+                      }}
+                    >
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                          <Code2 size={16} color={theme.main} />
+                          <span style={{ color: '#FFF', fontWeight: 'bold', fontSize: '0.82rem', fontFamily: 'monospace' }}>
+                            {task.filename}
+                          </span>
+                          <span style={{ color: '#888', fontSize: '0.7rem' }}>
+                            {task.size_bytes}B • {task.line_count} lines • {task.modified_str}
+                          </span>
+                          {task.has_test && (
+                            <span style={{ fontSize: '0.6rem', background: 'rgba(0,255,100,0.15)', color: theme.main, padding: '2px 6px', borderRadius: '10px', border: `1px solid ${theme.main}44` }}>
+                              UNITTEST ACTIVE
+                            </span>
+                          )}
+                        </div>
+                        <button
+                          onClick={() => runVaultTask(task)}
+                          disabled={isRunning}
+                          style={{
+                            background: isRunning ? 'rgba(255,215,0,0.2)' : 'rgba(0,240,255,0.15)',
+                            border: `1px solid ${isRunning ? theme.amber : theme.cyan}`,
+                            color: isRunning ? theme.amber : theme.cyan,
+                            padding: '5px 12px',
+                            borderRadius: '4px',
+                            fontSize: '0.72rem',
+                            fontWeight: 'bold',
+                            cursor: isRunning ? 'default' : 'pointer'
+                          }}
+                        >
+                          {isRunning ? 'RUNNING TEST...' : '⚡ RUN VERIFICATION'}
+                        </button>
+                      </div>
+
+                      {result && (
+                        <div
+                          style={{
+                            background: 'rgba(0,0,0,0.6)',
+                            padding: '8px 10px',
+                            borderRadius: '4px',
+                            borderLeft: `3px solid ${result.status === 'PASSED' ? theme.main : theme.err}`,
+                            fontFamily: 'monospace',
+                            fontSize: '0.7rem',
+                            color: result.status === 'PASSED' ? theme.main : theme.err
+                          }}
+                        >
+                          <div style={{ fontWeight: 'bold', marginBottom: '4px' }}>
+                            STATUS: {result.status} | EXIT CODE: {result.exit_code ?? 'N/A'} | DURATION: {result.duration_ms}ms
+                          </div>
+                          {(result.stdout || result.stderr || result.error) && (
+                            <pre style={{ margin: 0, whiteSpace: 'pre-wrap', maxHeight: '100px', overflowY: 'auto', color: '#AAA' }}>
+                              {(result.stdout || result.stderr || result.error).trim()}
+                            </pre>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </div>
+        )}
         </main>
       </div>
     </div>

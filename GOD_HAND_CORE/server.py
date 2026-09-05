@@ -2166,7 +2166,8 @@ def swarm_agent_action():
             search_data = ""
             try:
                 import server_tools
-                search_data = server_tools.web_search(query)
+                search_fn = getattr(server_tools, 'web_search', getattr(server_tools, 'search_web', None))
+                search_data = search_fn(query) if search_fn else ""
             except Exception:
                 search_data = "Web query executed via primary neural uplink."
             prompt = f"As GEMINI SCOUT, synthesize a deep research intel briefing for: '{query}'. Incorporate raw findings: '{search_data[:300]}'. Provide 3 key factual insights and direct implications for the fleet."
@@ -2649,6 +2650,95 @@ def api_swarm_execute_consensus():
     except Exception as e:
         logger.error(f'EXECUTE_CONSENSUS_ERROR: {e}')
         return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/swarm/tasks', methods=['GET'])
+def api_swarm_tasks():
+    """Lists all grown scripts in swarm_tasks directory with execution and test metadata."""
+    workspace_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+    swarm_dir = os.path.join(workspace_root, 'swarm_tasks')
+    if not os.path.exists(swarm_dir):
+        return jsonify({'tasks': [], 'count': 0})
+
+    tasks = []
+    for fname in sorted(os.listdir(swarm_dir), reverse=True):
+        if not fname.endswith('.py'):
+            continue
+        fpath = os.path.join(swarm_dir, fname)
+        try:
+            stat = os.stat(fpath)
+            with open(fpath, 'r', encoding='utf-8', errors='ignore') as f:
+                content = f.read()
+            lines = content.splitlines()
+            has_test = 'unittest' in content or 'assert ' in content
+            tasks.append({
+                'filename': fname,
+                'rel_path': f'swarm_tasks/{fname}',
+                'size_bytes': stat.st_size,
+                'modified_time': stat.st_mtime,
+                'modified_str': time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(stat.st_mtime)),
+                'line_count': len(lines),
+                'has_test': has_test,
+                'preview': '\n'.join(lines[:12])
+            })
+        except Exception as e:
+            logger.warning(f"Error reading task {fname}: {e}")
+
+    return jsonify({
+        'status': 'SUCCESS',
+        'tasks': tasks,
+        'count': len(tasks)
+    })
+
+
+@app.route('/api/swarm/run_task', methods=['POST'])
+def api_swarm_run_task():
+    """Executes a grown swarm task script safely in a subprocess and returns test/benchmark results."""
+    import subprocess
+    data = request.get_json() or {}
+    task_file = data.get('task_file', '').strip()
+    if not task_file:
+        return jsonify({'error': 'task_file is required'}), 400
+
+    workspace_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+    if not os.path.isabs(task_file):
+        task_file = os.path.abspath(os.path.join(workspace_root, task_file))
+
+    swarm_dir = os.path.abspath(os.path.join(workspace_root, 'swarm_tasks'))
+    if not task_file.startswith(swarm_dir) or not os.path.exists(task_file):
+        return jsonify({'error': 'Invalid or forbidden task file path'}), 400
+
+    t0 = time.time()
+    try:
+        proc = subprocess.run(
+            [sys.executable, task_file],
+            capture_output=True,
+            text=True,
+            timeout=15
+        )
+        duration_ms = round((time.time() - t0) * 1000, 2)
+        output = proc.stdout
+        if proc.stderr:
+            output += ("\n" + proc.stderr if output else proc.stderr)
+
+        return jsonify({
+            'status': 'PASSED' if proc.returncode == 0 else 'FAILED',
+            'returncode': proc.returncode,
+            'duration_ms': duration_ms,
+            'output': output.strip(),
+            'filename': os.path.basename(task_file)
+        })
+    except subprocess.TimeoutExpired:
+        return jsonify({
+            'status': 'TIMEOUT',
+            'error': 'Task execution exceeded 15 second threshold',
+            'duration_ms': 15000
+        }), 408
+    except Exception as e:
+        return jsonify({
+            'status': 'ERROR',
+            'error': str(e)
+        }), 500
 
 
 

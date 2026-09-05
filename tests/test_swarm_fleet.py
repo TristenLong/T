@@ -93,3 +93,27 @@ def test_security_unauthorized_rejection():
     action_res = requests.post(f'{BASE_URL}/api/swarm/agent_action', json={'bot_id': 'claude', 'action': 'generate_blueprint'}, timeout=5)
     assert action_res.status_code in [401, 403]
 
+def test_swarm_tasks_endpoint(auth_headers):
+    res = requests.get(f'{BASE_URL}/api/swarm/tasks', headers=auth_headers, timeout=5)
+    assert res.status_code == 200
+    data = res.json()
+    assert data.get('status') == 'SUCCESS'
+    assert 'tasks' in data
+    assert data.get('count', 0) > 0
+    first_task = data['tasks'][0]
+    assert 'filename' in first_task
+    assert 'size_bytes' in first_task
+    assert 'has_test' in first_task
+
+def test_swarm_run_task_endpoint(auth_headers):
+    # Run the verified mmap task
+    payload = {'task_file': 'swarm_tasks/task_1788651024.py'}
+    res = requests.post(f'{BASE_URL}/api/swarm/run_task', headers=auth_headers, json=payload, timeout=20)
+    assert res.status_code == 200
+    data = res.json()
+    assert data.get('status') == 'PASSED'
+    assert data.get('returncode') == 0
+    assert 'duration_ms' in data
+    assert 'Ran 3 tests' in data.get('output', '')
+
+
