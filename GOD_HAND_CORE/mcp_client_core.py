@@ -1,9 +1,30 @@
 import asyncio
 import json
 import os
+import traceback
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
+
+
+def _format_error(e: BaseException) -> str:
+    """Recursively unwrap asyncio.TaskGroup/ExceptionGroup chains to the first
+    non-group root cause and its traceback line."""
+    if hasattr(e, "exceptions") and getattr(e, "exceptions"):
+        for sub in e.exceptions:
+            detail = _format_error(sub)
+            if detail:
+                return detail
+        return str(e)
+    tb = e.__traceback__
+    line = ""
+    last = None
+    while tb:
+        last = tb
+        tb = tb.tb_next
+    if last is not None:
+        line = f" (at {last.tb_frame.f_code.co_filename.split(chr(92))[-1]}:{last.tb_lineno})"
+    return f"{type(e).__name__}: {e}{line}"
 
 # `command`/`args` reach these helpers from request bodies (/api/execute_tool's
 # mcp_execute branch), so the spawned process is caller-controlled. Handing it a
@@ -49,7 +70,7 @@ def run_mcp_tool(command: str, args: list, tool_name: str, tool_args: dict) -> s
     try:
         return asyncio.run(_async_run_mcp_tool(command, args, tool_name, tool_args))
     except Exception as e:
-        return f"MCP_ERROR: {str(e)}"
+        return f"MCP_ERROR: {_format_error(e)}"
 
 async def _async_run_mcp_tool(command: str, args: list, tool_name: str, tool_args: dict) -> str:
     argv = _spawn_command(command, args)
@@ -86,7 +107,7 @@ async def _async_run_mcp_tool(command: str, args: list, tool_name: str, tool_arg
                 return "\n".join([c.text for c in result.content if hasattr(c, 'text')])
                 
     except Exception as e:
-        return f"MCP_CLIENT_ERROR: {str(e)}"
+        return f"MCP_CLIENT_ERROR: {_format_error(e)}"
 
 def list_mcp_tools(command: str, args: list) -> str:
     """
@@ -114,4 +135,4 @@ async def _async_list_mcp_tools(command: str, args: list) -> str:
                 
                 return "\n".join(tool_list)
     except Exception as e:
-        return f"MCP_CLIENT_ERROR: {str(e)}"
+        return f"MCP_CLIENT_ERROR: {_format_error(e)}"

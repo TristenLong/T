@@ -3,6 +3,9 @@ import json
 import os
 import subprocess
 import sys
+import urllib.request
+import urllib.error
+import urllib.parse
 
 from pydantic import BaseModel, Field
 
@@ -259,6 +262,41 @@ def list_apps(filter: str = "") -> str:
     listing = "\n".join(f"- {n}" for n in names)
     return f"Installed apps ({len(names)} shown):\n{listing}"
 
+def apilayer_request(endpoint: str, params: dict | None = None) -> str:
+    """Make a request to an APILayer API using the configured APILAYER_API_KEY.
+    `endpoint` should be the path after api.apilayer.com (e.g. 'bad_words', 'exchangerates_data/latest').
+    `params` is a dictionary of query parameters.
+    """
+    import os
+    import urllib.request
+    import urllib.error
+    import urllib.parse
+    import json
+    
+    api_key = os.environ.get('APILAYER_API_KEY')
+    if not api_key:
+        return "Error: APILAYER_API_KEY is not set in environment."
+        
+    endpoint = endpoint.lstrip('/')
+    url = f"https://api.apilayer.com/{endpoint}"
+    
+    if params:
+        query_string = urllib.parse.urlencode(params)
+        url = f"{url}?{query_string}"
+        
+    req = urllib.request.Request(url)
+    req.add_header("apikey", api_key)
+    
+    try:
+        with urllib.request.urlopen(req) as response:
+            result = response.read()
+            return result.decode('utf-8')
+    except urllib.error.HTTPError as e:
+        err_msg = e.read().decode('utf-8')
+        return f"APILayer HTTP Error {e.code}: {err_msg}"
+    except Exception as e:
+        return f"APILayer Error: {e}"
+
 # --- Named MCP server registry (Jarvis/Miko management surface) ---
 # MCP servers in bot.py were spawned ad-hoc per request from `command`/`args`
 # passed by the caller. Registering servers here gives the model (and the UI) a
@@ -289,6 +327,91 @@ def list_mcp_servers() -> str:
     if not servers:
         return "No MCP servers registered."
     return "\n".join(f"- {s.get('name')}: {s.get('command')} {' '.join(s.get('args', []))}".rstrip() for s in servers)
+
+
+# Tools whose real result IS the answer (pi-agent-go Terminate): after a pure
+# round of these, the agent loop summarizes once instead of running another
+# tool-calling turn.
+TERMINAL_TOOLS = frozenset({
+    'open_app_or_url', 'list_apps', 'list_mcp_servers', 'query_knowledge_graph',
+    'diagnostics_report', 'mcp_execute', 'plan_and_execute',
+})
+
+# The ONLY tools a generated CodeAct-style plan may call. Everything else
+# (keystrokes, mouse, screens, sandbox, coder subagents) is off-limits to the
+# planner: the plan runs with the same safety posture as the tool loop.
+_PLAN_EXEC_WHITELIST = frozenset({
+    'open_app_or_url', 'search_web', 'check_reddit', 'list_apps',
+    'query_knowledge_graph', 'diagnostics_report', 'list_mcp_servers',
+    'conduct_deep_research',
+})
+
+
+def _call_tool_arg_tolerant(fn, args):
+    """Run one plan step with the same arg tolerance as the agent loop."""
+    import inspect
+    try:
+        sig = inspect.signature(fn)
+        params = set(sig.parameters)
+        val_args = {k: v for k, v in (args or {}).items() if k in params}
+        missing = [
+            p for p, prm in sig.parameters.items()
+            if prm.default is inspect.Parameter.empty and p not in val_args
+        ]
+        if missing:
+            for p in missing:
+                val_args[p] = ''
+        return str(fn(**val_args) if val_args else fn())
+    except TypeError as te:
+        return f'Error (bad arguments): {te}'
+    except Exception as ex:
+        return f'Error: {ex}'
+
+
+def plan_and_execute(task: str) -> str:
+    """Break a multi-step task into one plan and run every step in a single pass (CodeAct). Steps may only use the safe plan whitelist (web, apps, graphs, diagnostics, MCP servers); anything else is refused."""
+    task = (task or '').strip()
+    if not task:
+        return 'Error: no task specified'
+    try:
+        import json as _json
+        import llm_router
+        allowed = ", ".join(sorted(_PLAN_EXEC_WHITELIST))
+        prompt = (
+            'You are a task planner. Break the user request into at most 5 tool '
+            'steps. Return ONLY a JSON object with a steps array, each step like '
+            '{"steps": [{"tool": "<name>", "args": {"<param>": value}}]}. '
+            f'Allowed tools: {allowed}. Never include tools outside that list, '
+            'never nest plans, keep args to scalar values. No code fences.\n\n'
+            'Task: ' + task
+        )
+        plan_text, _model = llm_router.generate_completion_with_model(
+            [{'role': 'user', 'content': prompt}], require_json=True)
+        clean = plan_text.strip().replace('```json', '').replace('```', '').strip()
+        plan = _json.loads(clean)
+        steps = plan.get('steps') or []
+        if not isinstance(steps, list) or not steps or len(steps) > 5:
+            return 'Error: planner returned an unusable plan.'
+        lines = []
+        for i, step in enumerate(steps, 1):
+            if not isinstance(step, dict):
+                continue
+            name = (step.get('tool') or step.get('name') or '').strip()
+            args = step.get('args') or {}
+            if not name or name not in _PLAN_EXEC_WHITELIST:
+                lines.append(f'Step {i} ({name or "unknown"}): BLOCKED_BY_POLICY (not on plan whitelist)')
+                continue
+            fn = getattr(sys.modules[__name__], name, None)
+            if fn is None:
+                lines.append(f'Step {i} ({name}): UNKNOWN_TOOL')
+                continue
+            out = _call_tool_arg_tolerant(fn, args)
+            lines.append(f'Step {i} ({name}): {str(out)[:500]}')
+        if not lines:
+            return 'Error: plan produced no executable steps.'
+        return '\n'.join(lines)
+    except Exception as e:
+        return f'Plan error: {e}'
 
 
 def mcp_execute(server: str, tool_name: str, tool_args: dict | None = None) -> str:
@@ -325,6 +448,8 @@ AVAILABLE_TOOLS = [
     diagnostics_report,
     list_apps,
     query_knowledge_graph,
+    apilayer_request,
     mcp_execute,
     list_mcp_servers,
+    plan_and_execute,
 ]

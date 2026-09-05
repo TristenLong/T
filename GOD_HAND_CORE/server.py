@@ -464,6 +464,43 @@ def _is_query_echo(query, doc):
     return overlap >= 0.6 and abs(len(q_toks) - len(d_toks)) <= 2
 
 
+_TEMPORAL_MARKERS = re.compile(
+    r"\b(now|current|currently|today|latest|recent|recently|still|present|right now)\b|"
+    r"\bwhats?\s+(the\s+)?(current|latest|newest|status)\b",
+    re.IGNORECASE,
+)
+
+
+def _temporal_intent(query):
+    """True when the query asks about the current/state (mem0 temporal reasoning)."""
+    return bool(_TEMPORAL_MARKERS.search(query or ''))
+
+
+_TOPIC_STOPWORDS = {
+    'the', 'a', 'an', 'of', 'and', 'or', 'to', 'in', 'on', 'with', 'for',
+    'what', 'why', 'who', 'when', 'where', 'how', 'you', 'your', 'me', 'my',
+    'i', 'is', 'are', 'do', 'did', 'does', 'we', 'us', 'it', 'about',
+    'remember', 'recall', 'tell', 'know', 'been',
+}
+
+
+def _topic_tokens(query):
+    return [t for t in re.findall(r"[a-z0-9']+", (query or '').lower())
+            if t not in _TOPIC_STOPWORDS and len(t) >= 4]
+
+
+def _entity_facts_snippet(query, limit=4):
+    """Bound entity-linked knowledge-graph facts for injection into recall."""
+    try:
+        import learning_core
+        facts = learning_core.query_graph_entity_linked(query or '', limit=limit)
+    except Exception:
+        return ''
+    if not facts:
+        return ''
+    return 'GRAPH FACTS:\n' + facts
+
+
 def _hybrid_top(query, docs, top_k=3):
     """Blend BM25 + TF-IDF cosine into one ranked cut, thresholded like before."""
     if not docs:
@@ -480,6 +517,11 @@ def _hybrid_top(query, docs, top_k=3):
     cos_max = float(cosine_sim.max()) if len(cosine_sim) else 0.0
     cos_norm = [float(c) / cos_max if cos_max else 0.0 for c in cosine_sim]
     combined = [0.6 * b + 0.4 * c for b, c in zip(bm25_norm, cos_norm)]
+    # Temporal reasoning (mem0): docs are cached newest-first, so for
+    # state queries ("what is ... now") nudge the newest rows up in the blend.
+    if _temporal_intent(query):
+        n = max(1, len(docs))
+        combined = [combined[i] + 0.15 * ((n - i) / n) for i in range(n)]
     order = sorted(range(len(docs)), key=lambda i: combined[i], reverse=True)
     hits = [docs[i] for i in order[:top_k] if combined[i] > 0.12]
     return [d for d in hits if not _is_query_echo(query, d)]
@@ -523,7 +565,11 @@ def semantic_search_memory(query, top_k=3):
                     if len(d) > 10 and not _is_query_echo(query, d)
                 ]
                 if relevant:
-                    return "RECALLED PAST CONTEXT: " + " | ".join(relevant)
+                    recalled = "RECALLED PAST CONTEXT: " + " | ".join(relevant)
+                    facts = _entity_facts_snippet(query, 3)
+                    if facts:
+                        recalled += "\n" + facts
+                    return recalled
             return ""
         else:
             # Hybrid recall: TF-IDF cosine blended with Okapi BM25. The old
@@ -540,7 +586,11 @@ def semantic_search_memory(query, top_k=3):
             if hits:
                 relevant = [h[0] for h in hits if len(h[0]) > 10]
                 if relevant:
-                    return "RECALLED PAST CONTEXT: " + " | ".join(relevant)
+                    recalled = "RECALLED PAST CONTEXT: " + " | ".join(relevant)
+                    facts = _entity_facts_snippet(query, 3)
+                    if facts:
+                        recalled += "\n" + facts
+                    return recalled
             return ""
     except Exception as e:
         logger.error(f"SEMANTIC SEARCH ERROR: {e}")
@@ -592,27 +642,42 @@ _MEMORY_INTENT_RE = re.compile(
 )
 
 
-def _memory_recall_context():
+def _memory_recall_context(query=''):
     """Pull genuinely stored facts (not a persona speech) for memory questions.
 
-    Returns a prompt-injection string containing known user facts, recent
-    memories, and knowledge-graph triplets, or '' if memory is empty.
+    Three-layer progressive disclosure (claude-mem style): Layer 1 semantic
+    headline matches from history; Layer 2 timeline/observation rows from
+    memory_core (recent, or topic-filtered when the query names a subject);
+    Layer 3 entity-linked knowledge-graph facts, newest first. Every layer is
+    bounded so a large graph cannot blow the prompt. Returns a prompt-injection
+    string or '' when no memory exists.
     """
-    parts = []
     try:
-        import learning_core
+        parts = []
+        budget = 1600
+        def add(txt):
+            if txt and len("\n\n".join(parts)) < budget:
+                parts.append(txt)
+        sem = semantic_search_memory(query or '', top_k=3)
+        add(sem)
         import memory_core
-        recent = memory_core.retrieve_recent(10)
-        if recent and 'RECALL_ERROR' not in recent:
-            parts.append("RECENT MEMORIES:\n" + recent)
-        facts = learning_core.query_graph("")
-        if facts and 'NO_DATA_FOUND' not in facts and 'ERROR' not in facts:
-            parts.append("KNOWLEDGE GRAPH FACTS:\n" + facts)
+        topic = _topic_tokens(query or '')
+        if topic:
+            obs = memory_core.retrieve(' '.join(topic[:3]), 6)
+        else:
+            obs = memory_core.retrieve_recent(6)
+        if obs and 'RECALL_ERROR' not in obs and 'NO_MATCHING_MEMORIES' not in obs:
+            add("TIMELINE:\n" + obs)
+        import learning_core
+        facts = learning_core.query_graph_entity_linked(query or '', limit=8)
+        if facts:
+            add("KNOWLEDGE GRAPH:\n" + facts)
+        if not parts:
+            return ""
+        return "\n\nRECALLED FROM STORED MEMORY (quote these accurately, do not invent):\n" + "\n\n".join(parts)
     except Exception as e:
         logger.warning(f'MEMORY RECALL CONTEXT FAILED: {e}')
-    if not parts:
         return ""
-    return "\n\nRECALLED FROM STORED MEMORY (quote these accurately, do not invent):\n" + "\n".join(parts)
 
 
 def _build_openai_tools(functions):
@@ -739,6 +804,12 @@ def _salvage_embedded_tool_call(text):
 def _yield_salvaged_call(name, args, msgs):
     """Execute a salvaged tool call, mirroring the structured-call handler below."""
     import server_tools
+    # BeforeToolCall policy (pi-agent-go): the salvage path previously executed
+    # ANY server_tools function the model wrote as text -- including
+    # system_control (real keystrokes) and execute_python_sandbox. Gate it by
+    # the same deny set the structured path offers.
+    if name in _UNSAFE_TOOLS:
+        return [f'BLOCKED_BY_POLICY: {name} is Arsenal-only; not executed through the chat loop.']
     fn = getattr(server_tools, name, None)
     if fn is None:
         return [f"UNKNOWN TOOL: {name}"]
@@ -780,17 +851,25 @@ def _execute_tool_call(server_tools, name, args, msgs):
         return f'Error: {ex}', False
 
 
-def _run_tool_round(server_tools, calls, msgs):
+def _run_tool_round(server_tools, calls, msgs, blocked=frozenset()):
     """Execute one batch of tool_calls, parallelizing independent calls.
 
     JARVIS-style: a round can contain several calls; running them serially makes
     a multi-tool plan crawl. ThreadPoolExecutor runs the safe subset in parallel
     while preserving deterministic ordering for msgs history. Tools that spawn
     their own IO (subprocess, asyncio.run) are fine on worker threads.
+    `blocked` names are refused up-front (BeforeToolCall policy).
     """
     results = []
+    outputs = {}
     for c in calls:
         name = c['function']['name']
+        if name in blocked:
+            outputs[c['id']] = (
+                f"BLOCKED_BY_POLICY: {name} is Arsenal-only; "
+                "not executed through the chat loop."
+            )
+            continue
         try:
             args = json.loads(c['function']['arguments'] or '{}')
         except (json.JSONDecodeError, ValueError):
@@ -798,7 +877,6 @@ def _run_tool_round(server_tools, calls, msgs):
         if not isinstance(args, dict):
             args = {}
         results.append((c, name, args))
-    outputs = {}
     if len(results) > 1:
         from concurrent.futures import ThreadPoolExecutor
         with ThreadPoolExecutor(max_workers=min(4, len(results))) as pool:
@@ -830,6 +908,96 @@ def _run_tool_round(server_tools, calls, msgs):
     return outputs
 
 
+# The single deny-set that governs BOTH the schema offered to the model AND the
+# execute path. A name here can never run through the chat loop, whether it
+# arrived as a structured tool_call or as salvaged JSON written as prose.
+_UNSAFE_TOOLS = frozenset({
+    'system_control', 'execute_computer_use', 'start_visual_autopilot',
+    'execute_python_sandbox', 'dispatch_browser_swarm', 'analyze_screen',
+    'dispatch_mcp_swarm', 'run_rovo_dev', 'optimize_system',
+})
+
+
+def _looks_like_failure(out):
+    s = str(out)
+    return (s.startswith('Error') or 'UNKNOWN TOOL' in s
+            or 'UNKNOWN MCP SERVER' in s or 'BLOCKED_BY_POLICY' in s)
+
+
+_COMPACT_MAX_CHARS = 22000
+_COMPACT_TAIL_CHARS = 8000
+
+
+def _tail_truncate(msgs, max_chars):
+    """Deterministic fallback: drop oldest non-system turns until under budget."""
+    if not msgs:
+        return msgs
+    kept = msgs[:1]
+    rest = msgs[1:]
+    while rest and sum(len(str(m.get('content', ''))) for m in kept + rest) > max_chars:
+        rest.pop(0)
+    for m in rest:
+        content = str(m.get('content', ''))
+        if len(content) > 1500:
+            m['content'] = content[:1500] + '...[truncated]'
+    return kept + rest
+
+
+def _truncate_changed(orig, new):
+    return (len(orig) != len(new)
+            or sum(len(str(m.get('content', ''))) for m in orig)
+            != sum(len(str(m.get('content', ''))) for m in new))
+
+
+def _compact_router_messages(msgs, max_chars=_COMPACT_MAX_CHARS):
+    """MS agent-framework-style automatic context compaction.
+
+    When the running message list exceeds the budget, keep the system prompt,
+    the active user question and its in-flight tool round verbatim, and replace
+    the middle turns with one dense LLM summary. Falls back to trimming the
+    tail if the summarizer is unavailable. Returns (msgs, changed)."""
+    try:
+        total = sum(len(str(m.get('content', ''))) for m in msgs)
+        if total <= max_chars:
+            return msgs, False
+        if not msgs:
+            return msgs, False
+        head = msgs[0] if msgs[0].get('role') == 'system' else {'role': 'system', 'content': ''}
+        last_user = max(
+            (i for i, m in enumerate(msgs) if i > 0 and m.get('role') == 'user'),
+            default=None,
+        )
+        if last_user is None:
+            trimmed = _tail_truncate(msgs, max_chars)
+            return trimmed, _truncate_changed(msgs, trimmed)
+        tail = msgs[last_user:]
+        if sum(len(str(m.get('content', ''))) for m in tail) > _COMPACT_TAIL_CHARS:
+            tail = _tail_truncate(tail, _COMPACT_TAIL_CHARS)
+        mid = msgs[1:last_user]
+        if not mid:
+            return head + tail, True
+        transcript = "\n".join(f"{m.get('role')}: {str(m.get('content', ''))[:1200]}" for m in mid)
+        transcript = transcript[:12000]
+        prompt = (
+            "Compress the conversation turns below into one dense summary for a "
+            "voice assistant. Keep user preferences, stated facts, tool results "
+            "and decisions. Drop chit-chat. No preamble.\n\n" + transcript
+        )
+        try:
+            summary, _m = generate_completion_with_model([{'role': 'user', 'content': prompt}])
+        except Exception:
+            summary = ''
+        compressed = [head, {
+            'role': 'system',
+            'content': f'[Earlier context compacted] {(summary or "prior turns summarised")[:2400]}',
+        }]
+        return compressed + tail, True
+    except Exception as e:
+        logger.warning(f'CONTEXT COMPACTION FAILED, FALLBACK TRUNCATION: {e}')
+        trimmed = _tail_truncate(msgs, max_chars)
+        return trimmed, _truncate_changed(msgs, trimmed)
+
+
 def _agent_events(messages, sys_prompt, max_iters=3):
     """Agentic fallback chat: let the LLM call Tool Arsenal functions.
 
@@ -847,11 +1015,7 @@ def _agent_events(messages, sys_prompt, max_iters=3):
 
     safe_tools = [
         fn for fn in server_tools.AVAILABLE_TOOLS
-        if fn.__name__ not in {
-            'system_control', 'execute_computer_use', 'start_visual_autopilot',
-            'execute_python_sandbox', 'dispatch_browser_swarm',
-            'analyze_screen', 'dispatch_mcp_swarm', 'run_rovo_dev', 'optimize_system',
-        }
+        if fn.__name__ not in _UNSAFE_TOOLS
     ]
     msgs = _to_router_messages(messages, sys_prompt)
     tools = _build_openai_tools(safe_tools)
@@ -876,6 +1040,12 @@ def _agent_events(messages, sys_prompt, max_iters=3):
     msgs[0] = {'role': 'system', 'content': str(msgs[0]['content']) + caller_note}
 
     for _ in range(int(max_iters)):
+        # MS agent-framework context compaction: compress the middle turns into
+        # a summary before the window overflows, keeping the live question intact.
+        msgs, _compact_ran = _compact_router_messages(msgs)
+        if _compact_ran:
+            yield {'tool': {'name': 'CONTEXT_COMPACTION', 'status': 'DONE',
+                            'info': 'Context window compacted (dense summary injected)'}}
         try:
             content, calls, model = llm_router.tool_completion(msgs, tools)
         except Exception as e:
@@ -925,13 +1095,33 @@ def _agent_events(messages, sys_prompt, max_iters=3):
         # plan, then execute (in parallel when the model returned several).
         for c in calls:
             yield {'tool': {'name': c['function']['name'], 'status': 'RUN'}}
-        outputs = _run_tool_round(server_tools, calls, msgs)
+        outputs = _run_tool_round(server_tools, calls, msgs, blocked=_UNSAFE_TOOLS)
         for c in calls:
             name = c['function']['name']
             out = outputs.get(c['id'], 'Error: missing result')
             out = str(out)
             yield {'tool': {'name': name, 'status': 'DONE', 'info': out[:400]}}
             msgs.append({'role': 'tool', 'tool_call_id': c['id'], 'name': name, 'content': out[:3000]})
+
+        # pi-agent-go Terminate: when the round was a pure call to terminal
+        # tools (their result IS the answer) and none failed, skip the next
+        # tool-calling round and do one short plain summarization instead.
+        if not (content or '').strip() and calls and all(
+            c['function']['name'] in getattr(server_tools, 'TERMINAL_TOOLS', frozenset())
+            for c in calls
+        ) and all(not _looks_like_failure(str(outputs.get(c['id'], ''))) for c in calls):
+            msgs.append({
+                'role': 'user',
+                'content': 'Now answer the user directly from the tool results above in a short, natural reply. Do not call any more tools.',
+            })
+            try:
+                final_text, final_model = generate_completion_with_model(msgs)
+            except Exception as e:
+                logger.warning(f'TERMINAL TOOL SUMMARIZE FAILED: {e}')
+                final_text = ' '.join(str(outputs.get(c['id'], ''))[:300] for c in calls)
+                final_model = model
+            yield {'text': final_text or 'Done.', 'model': final_model}
+            return
 
     # The model kept calling tools without answering — force a final
     # summarizing pass so we never return empty-handed.
@@ -1125,7 +1315,10 @@ def execute_tool():
             'sys_optimize': lambda: server_tools.optimize_system('system'),
             'red_pill': lambda: "RED PILL TAKEN. Matrix decoded. You are now seeing the raw code.",
             'blue_pill': lambda: "BLUE PILL TAKEN. Ignorance is bliss. Re-entering simulation.",
-            'mcp_execute': lambda: run_mcp_tool(
+            'mcp_execute': lambda: server_tools.mcp_execute(
+                args.get('server', ''),
+                args.get('tool_name', 'list_directory'),
+                args.get('tool_args', {})) if args.get('server') else run_mcp_tool(
                 args.get('command', 'npx'),
                 args.get('args', ['-y', '@modelcontextprotocol/server-filesystem', 'C:\\']),
                 args.get('tool_name', 'list_directory'),
@@ -1236,7 +1429,7 @@ def chat():
         # Inject Semantic Context
         recalled_context = semantic_search_memory(msg)
         if not recalled_context and _MEMORY_INTENT_RE.search(msg or ""):
-            recalled_context = _memory_recall_context()
+            recalled_context = _memory_recall_context(msg)
         if recalled_context:
             sys_prompt += f"\n\n{recalled_context}"
         elif _MEMORY_INTENT_RE.search(msg or ""):
@@ -1381,7 +1574,7 @@ def chat_stream():
             # "What do you remember about me?" needs real stored facts, and
             # TF-IDF keyword search rarely matches that phrasing. Inject actual
             # memories / knowledge-graph triplets instead of a persona speech.
-            recalled_context = _memory_recall_context()
+            recalled_context = _memory_recall_context(msg)
         if recalled_context:
             sys_prompt += f"\n\n{recalled_context}"
         elif _MEMORY_INTENT_RE.search(msg or ""):
