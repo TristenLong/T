@@ -1,4 +1,4 @@
-﻿import React, { useState, useEffect, useRef, Suspense, useMemo } from 'react';
+import React, { useState, useEffect, useRef, Suspense, useMemo } from 'react';
 import { Canvas } from '@react-three/fiber';
 import { PerspectiveCamera, Stars } from '@react-three/drei';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -811,12 +811,22 @@ function App() {
               <div style={{ display: 'flex', alignItems: 'center', gap: '10px', color: theme.purple, fontWeight: 'bold', fontSize: '1.1rem' }}>
                 <BarChart2 size={20}/> QUANTUM SCIENCE OBSERVATORY (PORT 8765 TELEMETRY)
               </div>
-              <button 
-                onClick={() => setShowObservatory(false)}
-                style={{ background: 'none', border: `1px solid ${theme.purple}`, color: theme.purple, padding: '5px 15px', borderRadius: '4px', cursor: 'pointer' }}
-              >
-                <X size={16}/> CLOSE
-              </button>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                <a 
+                  href="/observatory.html" 
+                  target="_blank" 
+                  rel="noopener noreferrer"
+                  style={{ background: 'rgba(0, 240, 255, 0.1)', border: `1px solid ${theme.cyan}`, color: theme.cyan, padding: '5px 12px', borderRadius: '4px', textDecoration: 'none', fontSize: '0.8rem', display: 'flex', alignItems: 'center', gap: '6px' }}
+                >
+                  <Globe size={14}/> FULLSCREEN OBSERVATORY
+                </a>
+                <button 
+                  onClick={() => setShowObservatory(false)}
+                  style={{ background: 'none', border: `1px solid ${theme.purple}`, color: theme.purple, padding: '5px 15px', borderRadius: '4px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px' }}
+                >
+                  <X size={16}/> CLOSE
+                </button>
+              </div>
             </div>
             <div style={{ flex: 1, overflowY: 'auto', padding: '20px' }}>
               <ObservatoryTelemetry onAnomalyChange={(anom) => console.log('Anomaly status:', anom)} />

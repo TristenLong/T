@@ -44,7 +44,7 @@ def sync_contexts():
     print("[+] Tri-Context state is verified.")
 
 
-def close_session(custom_note=None):
+def close_session(custom_note=None, do_push=False):
     now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     git_status = get_git_status()
 
@@ -81,20 +81,35 @@ def close_session(custom_note=None):
             commit_msg = f"Session close: {note} ({now})"
             subprocess.run(["git", "commit", "-m", commit_msg], cwd=ROOT_DIR, check=True)
             print(f"[+] Committed changes: '{commit_msg}'")
+            if do_push:
+                print("[*] Pushing session commit to GitHub origin...")
+                push_res = subprocess.run(["git", "push"], cwd=ROOT_DIR, capture_output=True, text=True)
+                if push_res.returncode == 0:
+                    print("[+] Successfully pushed to GitHub remote.")
+                else:
+                    print(f"[-] Git push notice: {push_res.stderr.strip() or push_res.stdout.strip()}")
         except subprocess.CalledProcessError as e:
             print(f"[-] Git commit notice: {e}")
     else:
         print("[+] Working tree is clean. Nothing to commit.")
 
-    print("\n[✓] Session closed successfully! Have a great rest of your day.")
+    print("\n[OK] Session closed successfully! Have a great rest of your day.")
 
 
 def main():
-    if len(sys.argv) > 1 and sys.argv[1] in ["--close", "-c"]:
-        note = sys.argv[2] if len(sys.argv) > 2 else "Routine session close"
-        close_session(note)
+    args = sys.argv[1:]
+    do_push = "--push" in args or "-p" in args
+    filtered_args = [a for a in args if a not in ["--push", "-p"]]
+
+    if len(filtered_args) > 0 and filtered_args[0] in ["--close", "-c"]:
+        note = filtered_args[1] if len(filtered_args) > 1 else "Routine session close"
+        close_session(note, do_push=do_push)
+    elif do_push:
+        print("[*] Pushing current HEAD to GitHub origin...")
+        subprocess.run(["git", "push"], cwd=ROOT_DIR)
     else:
         sync_contexts()
+
 
 
 if __name__ == "__main__":

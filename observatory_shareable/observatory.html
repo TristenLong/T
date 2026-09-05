@@ -324,6 +324,48 @@
     padding-top: 20px;
     text-align: center;
   }
+  .hq-nav {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 10px;
+    flex-wrap: wrap;
+  }
+  .hq-title {
+    font-size: 10px;
+    color: var(--text-muted);
+    letter-spacing: 0.12em;
+    font-family: 'Orbitron', sans-serif;
+  }
+  .hq-link {
+    font-size: 11px;
+    color: var(--accent-green);
+    text-decoration: none;
+    padding: 4px 10px;
+    border: 1px solid var(--panel-border);
+    border-radius: 4px;
+    background: rgba(0, 255, 136, 0.05);
+    font-family: 'Orbitron', sans-serif;
+    letter-spacing: 0.08em;
+    transition: all 0.2s ease;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .hq-link:hover {
+    background: rgba(0, 255, 136, 0.2);
+    border-color: var(--accent-green);
+    box-shadow: 0 0 10px var(--accent-green-glow);
+    color: #fff;
+  }
+  .hq-link.live-pulse {
+    border-color: rgba(0, 229, 255, 0.4);
+    color: var(--accent-cyan);
+  }
+  .hq-link.live-pulse:hover {
+    background: rgba(0, 229, 255, 0.2);
+    box-shadow: 0 0 10px rgba(0, 229, 255, 0.5);
+  }
   footer a { color: var(--accent-cyan); text-decoration: none; }
 </style>
 </head>
@@ -334,6 +376,13 @@
     <div>
       <h1>OMNISCIENCE <span class="highlight">OBSERVATORY</span></h1>
       <div class="subtitle">QUANTUM ENTROPY // MACRO-STATE // JESTER CORE TELEMETRY</div>
+      <nav class="hq-nav">
+        <span class="hq-title">HQ COMM:</span>
+        <a href="http://localhost:5173" target="_blank" class="hq-link live-pulse" title="Main React matrix HUD">HUD (5173)</a>
+        <a href="http://127.0.0.1:5000/api/pulse" target="_blank" class="hq-link" title="Flask Backend API">API CORE (5000)</a>
+        <a href="http://localhost:7860" target="_blank" class="hq-link" title="Pipecat WebRTC Voice Engine">VOICE (7860)</a>
+        <a href="https://github.com/TristenLong/T" target="_blank" class="hq-link" title="Official Project Repository">GITHUB REPO</a>
+      </nav>
     </div>
     <div class="status-container">
       <div class="dot" id="statusDot"></div>
