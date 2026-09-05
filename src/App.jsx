@@ -178,6 +178,7 @@ function App() {
   const inputRef = useRef(null);
   const tts = typeof window !== 'undefined' ? window.speechSynthesis : null;
   const autoRestart = useRef(false);
+  const speakRef = useRef(null);
 
   const [matrixStats, setMatrixStats] = useState(null);
   const [activeBot, setActiveBot] = useState('swarm');
@@ -223,7 +224,7 @@ function App() {
                 .then(opt => {
                   if (opt && opt.status === 'SUCCESS') {
                     observe('SENTRY', `[AUTO-HEAL SUCCESS] Freed ${opt.freed_mb} MB across ${opt.trimmed_processes} processes.`);
-                    speak(`Sentry auto-healed system memory. Freed ${Math.round(opt.freed_mb)} megabytes, sir.`, 'jester');
+                    speakRef.current?.(`Sentry auto-healed system memory. Freed ${Math.round(opt.freed_mb)} megabytes, sir.`, 'jester');
                     setVitals(prev => ({ ...prev, ram: Math.round(opt.ram_percent) }));
                   }
                 })
@@ -435,6 +436,7 @@ function App() {
       if (onEndCallback) onEndCallback();
     }
   };
+  speakRef.current = speak;
 
   const previewVoice = (botId) => {
     const target = swarmBots.find(b => b.id === botId) || { name: botId.toUpperCase(), voice_profile: {} };

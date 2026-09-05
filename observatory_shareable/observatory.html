@@ -369,6 +369,124 @@
     box-shadow: 0 0 10px rgba(0, 229, 255, 0.5);
   }
   footer a { color: var(--accent-cyan); text-decoration: none; }
+
+  /* Clean Utility & Panel Classes */
+  .directive-panel {
+    text-align: center;
+    border-color: var(--accent-gold);
+    box-shadow: inset 0 0 20px rgba(255, 215, 0, 0.1);
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+  }
+  .directive-label {
+    justify-content: center;
+    color: var(--accent-gold);
+  }
+  .directive-readout {
+    font-size: 24px;
+    letter-spacing: 0.2em;
+    color: var(--accent-gold);
+  }
+  .directive-actions {
+    display: flex;
+    gap: 20px;
+    justify-content: center;
+    margin-top: 15px;
+    flex-wrap: wrap;
+  }
+  .btn-retrain {
+    background: transparent;
+    border: 1px solid var(--accent-green);
+    color: var(--accent-green);
+    padding: 10px 20px;
+    font-family: 'Orbitron', sans-serif;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    cursor: pointer;
+    transition: 0.3s;
+    border-radius: 4px;
+  }
+  .btn-sonify {
+    background: transparent;
+    border: 1px solid var(--accent-cyan);
+    color: var(--accent-cyan);
+    padding: 10px 20px;
+    font-family: 'Orbitron', sans-serif;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    cursor: pointer;
+    transition: 0.3s;
+    border-radius: 4px;
+  }
+  .hologram-panel {
+    padding: 0;
+    overflow: hidden;
+    min-height: 200px;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    position: relative;
+  }
+  .hologram-label {
+    position: absolute;
+    top: 15px;
+    left: 24px;
+    font-family: 'Orbitron', sans-serif;
+    font-size: 11px;
+    letter-spacing: 0.15em;
+    color: var(--accent-cyan);
+    z-index: 10;
+  }
+  .hologram-canvas {
+    width: 100%;
+    height: 100%;
+    position: absolute;
+    top: 0;
+    left: 0;
+  }
+  .text-cyan { color: var(--accent-cyan); }
+  .text-gold { color: var(--accent-gold); }
+  .text-red { color: var(--accent-red); }
+  .gauge-cyan-init { width: 0%; background: var(--accent-cyan); }
+  .gauge-green-init { width: 0%; background: var(--accent-green); }
+  .gauge-gold-init { width: 0%; background: var(--accent-gold); }
+  .gauge-cyan-50 { width: 50%; background: var(--accent-cyan); }
+  .gauge-gold-50 { width: 50%; background: var(--accent-gold); }
+  .mt-20 { margin-top: 20px; }
+  .panel-ai-quantum {
+    border-color: #00ff88;
+    box-shadow: inset 0 0 20px rgba(0, 255, 136, 0.05);
+  }
+  .panel-ai-quantum .panel-label span { color: #00ff88; }
+  .panel-ai-cosmic {
+    border-color: var(--accent-gold);
+    box-shadow: inset 0 0 20px rgba(255, 215, 0, 0.05);
+  }
+  .panel-ai-cosmic .panel-label span { color: var(--accent-gold); }
+  .panel-ai-societal {
+    border-color: var(--accent-cyan);
+    box-shadow: inset 0 0 20px rgba(0, 229, 255, 0.05);
+  }
+  .panel-ai-societal .panel-label span { color: var(--accent-cyan); }
+  .panel-ai-options {
+    border-color: #ff3366;
+    box-shadow: inset 0 0 30px rgba(255, 51, 102, 0.1);
+  }
+  .panel-ai-options .panel-label span { color: #ff3366; }
+  .ai-box {
+    font-size: 12px;
+    line-height: 1.6;
+    color: var(--text-main);
+    min-height: 80px;
+  }
+  .ai-box-options {
+    font-size: 14px;
+    line-height: 1.6;
+    color: #fff;
+    text-shadow: 0 0 10px rgba(255, 51, 102, 0.4);
+    min-height: 60px;
+  }
 </style>
 </head>
 <body>
@@ -395,19 +513,19 @@
   <div class="grid">
 
     <!-- PRIMARY DIRECTIVE PANEL -->
-    <div class="panel col-6" style="text-align: center; border-color: var(--accent-gold); box-shadow: inset 0 0 20px rgba(255, 215, 0, 0.1); display: flex; flex-direction: column; justify-content: center;">
-      <div class="panel-label" style="justify-content: center; color: var(--accent-gold);"><span>PRIMARY DIRECTIVE</span></div>
-      <div class="big-readout" style="font-size: 24px; letter-spacing: 0.2em; color: var(--accent-gold);">MONITOR MACRO-STATE TELEMETRY</div>
-      <div style="display: flex; gap: 20px; justify-content: center; margin-top: 15px; flex-wrap: wrap;">
-        <button id="retrainBtn" style="background: transparent; border: 1px solid var(--accent-green); color: var(--accent-green); padding: 10px 20px; font-family: 'Orbitron'; font-weight: 700; letter-spacing: 0.1em; cursor: pointer; transition: 0.3s; border-radius: 4px;">FORCE ML RETRAIN</button>
-        <button id="audioBtn" style="background: transparent; border: 1px solid var(--accent-cyan); color: var(--accent-cyan); padding: 10px 20px; font-family: 'Orbitron'; font-weight: 700; letter-spacing: 0.1em; cursor: pointer; transition: 0.3s; border-radius: 4px;">ENABLE SONIFICATION</button>
+    <div class="panel col-6 directive-panel">
+      <div class="panel-label directive-label"><span>PRIMARY DIRECTIVE</span></div>
+      <div class="big-readout directive-readout">MONITOR MACRO-STATE TELEMETRY</div>
+      <div class="directive-actions">
+        <button id="retrainBtn" class="btn-retrain">FORCE ML RETRAIN</button>
+        <button id="audioBtn" class="btn-sonify">ENABLE SONIFICATION</button>
       </div>
     </div>
 
     <!-- 3D HOLOGRAM PANEL -->
-    <div class="panel col-6" style="padding: 0; overflow: hidden; min-height: 200px; display: flex; justify-content: center; align-items: center; position: relative;">
-      <div style="position: absolute; top: 15px; left: 24px; font-family: 'Orbitron'; font-size: 11px; letter-spacing: 0.15em; color: var(--accent-cyan); z-index: 10;">DIMENSIONAL PROJECTION</div>
-      <div id="canvas-container" style="width: 100%; height: 100%; position: absolute; top: 0; left: 0;"></div>
+    <div class="panel col-6 hologram-panel">
+      <div class="hologram-label">DIMENSIONAL PROJECTION</div>
+      <div id="canvas-container" class="hologram-canvas"></div>
     </div>
 
     <div class="anomaly-banner" id="anomalyBanner">
@@ -430,14 +548,14 @@
     <div class="panel col-4">
       <div class="panel-label"><span>QUANTUM ENTROPY</span></div>
       <div class="big-readout" id="entropyVal">0.0000<span class="unit">bits</span></div>
-      <div class="sub-readout">ROLLING Z-SCORE: <b id="zscoreVal" style="color: var(--accent-cyan)">0.00</b></div>
+      <div class="sub-readout">ROLLING Z-SCORE: <b id="zscoreVal" class="text-cyan">0.00</b></div>
     </div>
 
     <div class="panel col-4">
       <div class="panel-label"><span>OS CPU LOAD</span></div>
       <div class="big-readout" id="cpuVal">0.0<span class="unit">%</span></div>
       <div class="gauge-container">
-        <div class="gauge-track"><div class="gauge-fill" id="cpuGauge" style="width:0%; background: var(--accent-cyan);"></div></div>
+        <div class="gauge-track"><div class="gauge-fill gauge-cyan-init" id="cpuGauge"></div></div>
       </div>
       <div class="sub-readout">SYSTEM TELEMETRY</div>
     </div>
@@ -446,7 +564,7 @@
       <div class="panel-label"><span>OS RAM LOAD</span></div>
       <div class="big-readout" id="ramVal">0.0<span class="unit">%</span></div>
       <div class="gauge-container">
-        <div class="gauge-track"><div class="gauge-fill" id="ramGauge" style="width:0%; background: var(--accent-green);"></div></div>
+        <div class="gauge-track"><div class="gauge-fill gauge-green-init" id="ramGauge"></div></div>
       </div>
       <div class="sub-readout">SYSTEM TELEMETRY</div>
     </div>
@@ -456,7 +574,7 @@
       <div class="panel-label"><span>GEOMAGNETIC (Kp)</span></div>
       <div class="big-readout" id="kpVal">0.0</div>
       <div class="gauge-container">
-        <div class="gauge-track"><div class="gauge-fill" id="kpGauge" style="width:0%; background: var(--accent-green);"></div></div>
+        <div class="gauge-track"><div class="gauge-fill gauge-green-init" id="kpGauge"></div></div>
         <div class="gauge-markers"><span>0</span><span>9</span></div>
       </div>
       <div class="sub-readout">PLANETARY INDEX</div>
@@ -466,16 +584,16 @@
       <div class="panel-label"><span>PREDICTIVE SPACE WEATHER</span></div>
       <div class="big-readout" id="predKpVal">0.0</div>
       <div class="gauge-container">
-        <div class="gauge-track"><div class="gauge-fill" id="predKpGauge" style="width:0%; background: var(--accent-gold);"></div></div>
+        <div class="gauge-track"><div class="gauge-fill gauge-gold-init" id="predKpGauge"></div></div>
         <div class="gauge-markers"><span>0</span><span>9</span></div>
       </div>
-      <div class="sub-readout" style="color: var(--accent-gold)">INCOMING STORM PROBABILITY</div>
+      <div class="sub-readout text-gold">INCOMING STORM PROBABILITY</div>
     </div>
 
     <div class="panel col-4">
       <div class="panel-label"><span>SOLAR WIND</span></div>
       <div class="big-readout" id="swVal">0<span class="unit">km/s</span></div>
-      <div class="sub-readout">DENSITY: <b id="swDensity" style="color: var(--accent-gold)">0.0</b> p/cm³<br>SRC: <b id="swSource">DSCOVR</b></div>
+      <div class="sub-readout">DENSITY: <b id="swDensity" class="text-gold">0.0</b> p/cm³<br>SRC: <b id="swSource">DSCOVR</b></div>
     </div>
 
     <div class="panel col-4">
@@ -488,7 +606,7 @@
       <div class="panel-label"><span>CORR: H × Kp</span></div>
       <div class="big-readout" id="corrKp">0.000</div>
       <div class="gauge-container">
-        <div class="gauge-track"><div class="gauge-fill" id="corrKpGauge" style="width:50%; background: var(--accent-cyan);"></div></div>
+        <div class="gauge-track"><div class="gauge-fill gauge-cyan-50" id="corrKpGauge"></div></div>
       </div>
       <div class="sub-readout">PEARSON r</div>
     </div>
@@ -496,7 +614,7 @@
     <div class="panel col-4">
       <div class="panel-label"><span>SEISMIC (M4.5+)</span></div>
       <div class="big-readout" id="quakeVal">M 0.0</div>
-      <div class="sub-readout" id="quakePlace" style="margin-top: 20px;">AWAITING DATA...</div>
+      <div class="sub-readout mt-20" id="quakePlace">AWAITING DATA...</div>
     </div>
 
     <!-- ROW 3: THEORETICAL PHYSICS -->
@@ -504,7 +622,7 @@
       <div class="panel-label"><span>GLOBAL CONSCIOUSNESS (NLP)</span></div>
       <div class="big-readout" id="sentimentVal">0.000</div>
       <div class="gauge-container">
-        <div class="gauge-track"><div class="gauge-fill" id="sentimentGauge" style="width:50%; background: var(--accent-cyan);"></div></div>
+        <div class="gauge-track"><div class="gauge-fill gauge-cyan-50" id="sentimentGauge"></div></div>
         <div class="gauge-markers"><span>-1.0 (CHAOS)</span><span>+1.0 (HARMONY)</span></div>
       </div>
       <div class="sub-readout">NEWS SENTIMENT POLARITY</div>
@@ -513,7 +631,7 @@
     <div class="panel col-4">
       <div class="panel-label"><span>QUANTUM ENTANGLEMENT</span></div>
       <div class="big-readout" id="chshVal">0.000<span class="unit">S</span></div>
-      <div class="sub-readout">CHSH INEQUALITY: <b id="chshViolation" style="color: var(--accent-red)">NO VIOLATION</b></div>
+      <div class="sub-readout">CHSH INEQUALITY: <b id="chshViolation" class="text-red">NO VIOLATION</b></div>
     </div>
 
     <div class="panel col-4">
@@ -527,28 +645,28 @@
       <div class="panel-label"><span>FRACTAL MEMORY (HURST EXPONENT)</span></div>
       <div class="big-readout" id="hurstVal">0.5000</div>
       <div class="gauge-container">
-        <div class="gauge-track"><div class="gauge-fill" id="hurstGauge" style="width:50%; background: var(--accent-gold);"></div></div>
+        <div class="gauge-track"><div class="gauge-fill gauge-gold-50" id="hurstGauge"></div></div>
         <div class="gauge-markers"><span>0.0 (MEAN-REVERT)</span><span>1.0 (PERSISTENT)</span></div>
       </div>
-      <div class="sub-readout">UNIVERSE MEMORY STATE: <b id="hurstState" style="color: var(--accent-cyan)">RANDOM WALK</b></div>
+      <div class="sub-readout">UNIVERSE MEMORY STATE: <b id="hurstState" class="text-cyan">RANDOM WALK</b></div>
     </div>
 
     <!-- ROW 5: AI COUNCIL CORE -->
-    <div class="panel col-4" style="border-color: #00ff88; box-shadow: inset 0 0 20px rgba(0, 255, 136, 0.05);">
-      <div class="panel-label"><span style="color: #00ff88;">QUANTUM ARCHITECT AI</span></div>
-      <div id="aiQuantum" style="font-size: 12px; line-height: 1.6; color: var(--text-main); min-height: 80px;">AWAITING SYNTHESIS...</div>
+    <div class="panel col-4 panel-ai-quantum">
+      <div class="panel-label"><span>QUANTUM ARCHITECT AI</span></div>
+      <div id="aiQuantum" class="ai-box">AWAITING SYNTHESIS...</div>
     </div>
-    <div class="panel col-4" style="border-color: var(--accent-gold); box-shadow: inset 0 0 20px rgba(255, 215, 0, 0.05);">
-      <div class="panel-label"><span style="color: var(--accent-gold);">COSMIC WATCHER AI</span></div>
-      <div id="aiCosmic" style="font-size: 12px; line-height: 1.6; color: var(--text-main); min-height: 80px;">AWAITING SYNTHESIS...</div>
+    <div class="panel col-4 panel-ai-cosmic">
+      <div class="panel-label"><span>COSMIC WATCHER AI</span></div>
+      <div id="aiCosmic" class="ai-box">AWAITING SYNTHESIS...</div>
     </div>
-    <div class="panel col-4" style="border-color: var(--accent-cyan); box-shadow: inset 0 0 20px rgba(0, 229, 255, 0.05);">
-      <div class="panel-label"><span style="color: var(--accent-cyan);">MACRO-SOCIETAL AI</span></div>
-      <div id="aiSocietal" style="font-size: 12px; line-height: 1.6; color: var(--text-main); min-height: 80px;">AWAITING SYNTHESIS...</div>
+    <div class="panel col-4 panel-ai-societal">
+      <div class="panel-label"><span>MACRO-SOCIETAL AI</span></div>
+      <div id="aiSocietal" class="ai-box">AWAITING SYNTHESIS...</div>
     </div>
-    <div class="panel col-12" style="border-color: #ff3366; box-shadow: inset 0 0 30px rgba(255, 51, 102, 0.1);">
-      <div class="panel-label"><span style="color: #ff3366;">STRATEGIC OPTIONS & PREDICTIONS</span></div>
-      <div id="aiOptions" style="font-size: 14px; line-height: 1.6; color: #fff; text-shadow: 0 0 10px rgba(255,51,102,0.4); min-height: 60px;">AWAITING SYNTHESIS...</div>
+    <div class="panel col-12 panel-ai-options">
+      <div class="panel-label"><span>STRATEGIC OPTIONS & PREDICTIONS</span></div>
+      <div id="aiOptions" class="ai-box-options">AWAITING SYNTHESIS...</div>
     </div>
 
     <div class="panel col-6">
