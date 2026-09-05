@@ -649,7 +649,10 @@ def semantic_search_memory(query, top_k=3):
                 return ""
             hits = _hybrid_top(query, docs, top_k)
             if hits:
-                relevant = [h[0] for h in hits if len(h[0]) > 10]
+                # hits are plain doc strings (see _hybrid_top); slicing [0] on
+                # a string took the first CHARACTER and the chroma-off hybrid
+                # path could never recall anything.
+                relevant = [h for h in hits if len(h) > 10]
                 if relevant:
                     recalled = "RECALLED PAST CONTEXT: " + " | ".join(relevant)
                     facts = _entity_facts_snippet(query, 3)
