@@ -56,18 +56,25 @@ test('renders Sentry Watcher toggle, RAM purge button, and Swarm Execute Consens
   const overrideBtn = screen.getByText(/OVERRIDE BOOT SEQUENCE/i);
   fireEvent.click(overrideBtn);
 
-  // Sentry toggle button
+  // Sentry toggle button and Auto-Heal button
   const sentryBtn = screen.getByRole('button', { name: /SENTRY:/i });
   expect(sentryBtn).toBeInTheDocument();
-  fireEvent.click(sentryBtn);
+  
+  const autoHealBtn = screen.getByRole('button', { name: /AUTO-HEAL:/i });
+  expect(autoHealBtn).toBeInTheDocument();
+  fireEvent.click(autoHealBtn);
 
   // RAM purge button
   expect(screen.getByText(/PURGE/i)).toBeInTheDocument();
 
-  // Execute consensus button
+  // Execute consensus and Run Full Pipeline buttons
   const execBtn = screen.getByRole('button', { name: /EXECUTE CONSENSUS/i });
   expect(execBtn).toBeInTheDocument();
   fireEvent.click(execBtn);
+
+  const pipelineBtn = screen.getByRole('button', { name: /RUN FULL PIPELINE/i });
+  expect(pipelineBtn).toBeInTheDocument();
+  fireEvent.click(pipelineBtn);
 });
 
 
