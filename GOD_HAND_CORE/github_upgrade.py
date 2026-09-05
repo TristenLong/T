@@ -49,6 +49,22 @@ def _strip_credentials(url):
     return re.sub(r"://[^/@]+@", "://", url)
 
 
+def _remote_ahead_of_local(branch):
+    """True when origin/<branch> is strictly ahead of HEAD (safe to pull).
+
+    `git merge-base --is-ancestor HEAD origin/<branch>` exits 0 only when the
+    local tip is reachable from the remote tip. If it fails, the remote is
+    either exactly equal, behind, or diverged from local -- upgrading then
+    would silently discard committed local work (this branch is normally ahead
+    until it is pushed).
+    """
+    code, _ = _git("merge-base", "--is-ancestor", "HEAD", "origin/" + branch)
+    if code != 0:
+        return False
+    code, out = _git("rev-parse", "--verify", "origin/" + branch)
+    return code == 0 and bool(out.strip())
+
+
 def check_for_updates():
     """Compare local HEAD against origin/<branch>.
 
@@ -79,7 +95,11 @@ def check_for_updates():
             "current": local_sha,
             "latest": remote_sha,
             "remote_url": _remote_url(),
-            "available": bool(remote_sha) and remote_sha != local_sha,
+            "available": (
+                bool(remote_sha)
+                and remote_sha != local_sha
+                and _remote_ahead_of_local(branch)
+            ),
         }
     )
     return result
@@ -88,9 +108,13 @@ def check_for_updates():
 def do_upgrade():
     """Hard-reset the working tree to origin/<tracked branch>.
 
-    Discards local changes to tracked files (including runtime DB state files,
-    which are tracked in this repo) and pins the repo to the latest remote
-    commit. Returns a summary dict.
+    Discards local changes to tracked files and pins the repo to the latest
+    remote commit. Returns a summary dict.
+
+    Guards: refuses to run when the remote is NOT strictly ahead of HEAD
+    (otherwise an unre-pushed local branch would be downgraded); runtime state
+    (chroma_db, DBs, xp) is untracked and gitignored so the reset can never hit
+    the Windows file locks a live server holds on them.
     """
     result = {"ok": False, "error": None}
     if not _is_git_repo():
@@ -114,10 +138,21 @@ def do_upgrade():
     if remote_sha == local_sha:
         result.update({"ok": True, "already_up_to_date": True, "sha": local_sha, "branch": branch})
         return result
+    if not _remote_ahead_of_local(branch):
+        result["error"] = (
+            "REMOTE_NOT_AHEAD: origin/" + branch + " contains no new commits on "
+            "top of local history (local is ahead or diverged). Upgrade would "
+            "discard committed local work. Push local commits first, then retry."
+        )
+        return result
 
     code, out = _git("reset", "--hard", "origin/" + branch)
     if code != 0:
-        result["error"] = "RESET_FAILED: " + out.strip()[:300]
+        result["error"] = (
+            "RESET_FAILED: " + out.strip()[:300] +
+            " (if a file is locked, stop the app and run: "
+            "git reset --hard origin/" + branch + ")"
+        )
         return result
 
     result.update(

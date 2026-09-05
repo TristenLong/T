@@ -57,4 +57,13 @@ GOD_HAND_CORE/mcp_servers.json
 *.err
 jester_ai_test.html
 public/puter_probe.html
+
+# Runtime STATE: tracked binaries + DBs held open by the running server. A git
+# hard-reset (the in-app upgrader) tried to unlink them while Chroma memory-maps
+# data_level0.bin on Windows -> "unable to unlink ... Invalid argument" and a
+# half-finished reset. These are regenerable state, never version them.
+GOD_HAND_CORE/chroma_db/
+GOD_HAND_CORE/jester_V73_OMNIPRESENCE.db
+GOD_HAND_CORE/jester_memory.db
+GOD_HAND_CORE/jester_xp.json
 test_puter.mjs
