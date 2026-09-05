@@ -40,6 +40,31 @@ PUTER_MODEL = os.getenv("JESTER_PUTER_MODEL", "z-ai/glm-5.3")
 
 puter_client = OpenAI(api_key=PUTER_API_TOKEN, base_url=PUTER_BASE_URL) if PUTER_API_TOKEN else None
 
+# Optional heavier local/cloud model for complex single-turn work (oh-my-codex
+# style auto-routing). Empty by default; set JESTER_HEAVY_MODEL to enable it.
+HEAVY_MODEL = os.getenv('JESTER_HEAVY_MODEL') or None
+
+_COMPLEX_MARKERS = (
+    'compare', 'explain why', 'debug', 'why is', 'how does', 'write a',
+    'refactor', 'design', 'implement', 'analyze', 'summarize this', 'fix the',
+    'evaluate', 'weigh', 'trade', 'strategy', 'architecture', 'performance',
+    'security', 'review this',
+)
+
+
+def classify_complexity(text):
+    """Coarse complexity estimate used to pick a heavier model when configured.
+
+    'complex' for long or skill-heavy asks (debugging, design, analysis),
+    'standard' for mid-length turns, 'trivial' for casual chat.
+    """
+    t = (text or '').lower()
+    if len(t) > 700 or any(m in t for m in _COMPLEX_MARKERS):
+        return 'complex'
+    if len(t) > 250:
+        return 'standard'
+    return 'trivial'
+
 
 def configure_puter(auth_token, model=None):
     """Arm Puter at runtime with a token obtained from the renderer's sign-in.
@@ -170,9 +195,13 @@ def generate_completion_with_model(messages, require_json=False):
 
     # 2. Attempt Local Ollama Execution
     if is_ollama_available():
-        logger.info(f"Ollama detected. Routing to local model: {DEFAULT_OLLAMA_MODEL}")
+        complexity = classify_complexity(
+            ' '.join(str(m.get('content', '')) for m in messages if m.get('role') in ('user', 'system'))[:2000]
+        )
+        ollama_model = HEAVY_MODEL if (HEAVY_MODEL and complexity in ('standard', 'complex')) else DEFAULT_OLLAMA_MODEL
+        logger.info(f"Ollama detected. Routing to local model: {ollama_model} (complexity={complexity})")
         payload = {
-            "model": DEFAULT_OLLAMA_MODEL,
+            "model": ollama_model,
             "messages": messages,
             "stream": False
         }
@@ -183,7 +212,7 @@ def generate_completion_with_model(messages, require_json=False):
             response = requests.post(OLLAMA_URL, json=payload, timeout=120)
             if response.status_code == 200:
                 data = response.json()
-                return data.get("message", {}).get("content", ""), DEFAULT_OLLAMA_MODEL
+                return data.get("message", {}).get("content", ""), ollama_model
             logger.warning(f"Ollama failed with status {response.status_code}: {response.text}. Falling back to OpenAI.")
         except requests.RequestException as e:
             logger.warning(f"Ollama execution failed: {e}. Falling back to OpenAI.")

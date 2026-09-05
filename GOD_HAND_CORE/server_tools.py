@@ -329,6 +329,70 @@ def list_mcp_servers() -> str:
     return "\n".join(f"- {s.get('name')}: {s.get('command')} {' '.join(s.get('args', []))}".rstrip() for s in servers)
 
 
+# --- Persistent todo working-memory (MS agent-framework TodoProvider) ---
+# Lets the model track multi-step work ("mark step done" after each tool result)
+# without depending on the chat transcript -- survives across turns and sessions.
+_TODOS_DB = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'jester_V73_OMNIPRESENCE.db')
+
+
+def _todos_conn():
+    import sqlite3
+    conn = sqlite3.connect(_TODOS_DB)
+    conn.cursor().execute(
+        "CREATE TABLE IF NOT EXISTS todos (id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "text TEXT, done INTEGER DEFAULT 0, created DATETIME DEFAULT CURRENT_TIMESTAMP)"
+    )
+    return conn
+
+
+def todo_add(text: str) -> str:
+    """Add a task to the persistent todo list used during multi-step work."""
+    import sqlite3
+    text = (text or '').strip()
+    if not text:
+        return 'Error: empty todo'
+    try:
+        conn = _todos_conn()
+        c = conn.cursor()
+        c.execute("INSERT INTO todos (text) VALUES (?)", (text,))
+        tid = c.lastrowid
+        conn.commit()
+        conn.close()
+        return f"TODO #{tid} added: {text}"
+    except Exception as e:
+        return f'Error: {e}'
+
+
+def todo_list(done: bool = False) -> str:
+    """List open todos. Pass done=True to show completed ones (or False for open only)."""
+    import sqlite3
+    try:
+        conn = _todos_conn()
+        c = conn.cursor()
+        c.execute("SELECT id, text FROM todos WHERE done=? ORDER BY id", (1 if done else 0,))
+        rows = c.fetchall()
+        conn.close()
+        if not rows:
+            return f"No {'completed' if done else 'open'} todos."
+        return "\n".join(f"{'[x]' if done else '[ ]'} #{r[0]}: {r[1]}" for r in rows)
+    except Exception as e:
+        return f'Error: {e}'
+
+
+def todo_mark(id: int, done: bool = True) -> str:
+    """Mark a todo by its id as done (or undone with done=False)."""
+    import sqlite3
+    try:
+        conn = _todos_conn()
+        c = conn.cursor()
+        c.execute("UPDATE todos SET done=? WHERE id=?", (1 if done else 0, int(id)))
+        conn.commit()
+        conn.close()
+        return f"TODO #{id} {'DONE' if done else 'REOPENED'}."
+    except Exception as e:
+        return f'Error: {e}'
+
+
 # Tools whose real result IS the answer (pi-agent-go Terminate): after a pure
 # round of these, the agent loop summarizes once instead of running another
 # tool-calling turn.
@@ -343,7 +407,7 @@ TERMINAL_TOOLS = frozenset({
 _PLAN_EXEC_WHITELIST = frozenset({
     'open_app_or_url', 'search_web', 'check_reddit', 'list_apps',
     'query_knowledge_graph', 'diagnostics_report', 'list_mcp_servers',
-    'conduct_deep_research',
+    'conduct_deep_research', 'todo_add', 'todo_list', 'todo_mark',
 })
 
 
@@ -452,4 +516,7 @@ AVAILABLE_TOOLS = [
     mcp_execute,
     list_mcp_servers,
     plan_and_execute,
+    todo_add,
+    todo_list,
+    todo_mark,
 ]

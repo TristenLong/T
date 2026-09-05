@@ -292,6 +292,7 @@ def init_db():
         # "database is locked" errors under concurrent chats.
         c.execute('PRAGMA journal_mode=WAL')
         c.execute('CREATE TABLE IF NOT EXISTS history (id INTEGER PRIMARY KEY AUTOINCREMENT, role TEXT, content TEXT, pinned INTEGER DEFAULT 0, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP)')
+        c.execute('CREATE TABLE IF NOT EXISTS todos (id INTEGER PRIMARY KEY AUTOINCREMENT, text TEXT, done INTEGER DEFAULT 0, created DATETIME DEFAULT CURRENT_TIMESTAMP)')
         # Every query in this module filters or orders by role/id; without this
         # the semantic-cache refresh scans the whole table.
         c.execute('CREATE INDEX IF NOT EXISTS idx_history_role_id ON history (role, id DESC)')
@@ -447,6 +448,70 @@ def _enqueue_fact_mining(text):
         _FACT_QUEUE.put((text or '')[:2000], timeout=0.2)
     except queue.Full:
         pass
+
+
+# --- Session-note worker (claude-mem sessions layer) ---
+# After a substantive turn, distill a one-line dated memory note so later
+# recall surfaces what actually happened in conversation, not just extracted
+# triplets. Runs off the request path and is rate-limited like the fact miner.
+_SESSION_NOTE_QUEUE = queue.Queue()
+_SESSION_NOTE_LOCK = threading.Lock()
+_SESSION_NOTE_LAST = [0.0]
+
+
+def _session_note_worker():
+    import memory_core
+    while True:
+        try:
+            item = _SESSION_NOTE_QUEUE.get(timeout=30)
+        except queue.Empty:
+            continue
+        user_text, reply_text = item
+        with _SESSION_NOTE_LOCK:
+            now = time.time()
+            if now - _SESSION_NOTE_LAST[0] < 240:
+                continue
+            _SESSION_NOTE_LAST[0] = now
+        try:
+            prompt = (
+                "Write ONE durable memory note (a single sentence) capturing "
+                "anything worth remembering later from this exchange: user facts, "
+                "preferences, tasks, decisions. If nothing is worth remembering, "
+                "reply exactly MEMORIZE_SKIP.\n\n"
+                f"User said: {user_text[:800]}\nJESTER replied: {reply_text[:1200]}"
+            )
+            note, _m = generate_completion_with_model([{'role': 'user', 'content': prompt}])
+            note = (note or '').strip()
+            skip = re.sub(r'[^a-z]', '', note.lower()) == 'memorizeskip'
+            if not skip and note and len(note) < 500:
+                memory_core.save(note, importance=5, metadata={'kind': 'session_note'})
+                logger.info(f'SESSION NOTE: {note[:200]}')
+        except Exception as e:
+            logger.warning(f'SESSION NOTE FAILED: {e}')
+
+
+def _enqueue_session_note(user_text, reply_text):
+    """Non-blocking: drop a finished turn into the note-distillation worker."""
+    try:
+        _SESSION_NOTE_QUEUE.put((user_text or '', reply_text or ''), timeout=0.2)
+    except queue.Full:
+        pass
+
+
+def _local_grounding_note():
+    """One-line honesty guard for the weak local model (invented recall fix).
+
+    llama3.2 answered "my favourite language is Python" by inventing a shared
+    history. When Puter is not armed and Ollama is serving, pin the model to
+    grounded answers instead of fabricated persona memories.
+    """
+    if not llm_router_ollama_available() or llm_router_puter_armed():
+        return ''
+    return (
+        "\n\nHARD GROUNDING: you are running on a small local model. Never invent "
+        "personal history, past conversations, numbers, or file contents. Answer "
+        "only from the provided context; where you don't know, say you don't know."
+    )
 
 
 def _is_query_echo(query, doc):
@@ -1029,6 +1094,7 @@ def _agent_events(messages, sys_prompt, max_iters=3):
         f"'search ...'/'look up' -> search_web or conduct_deep_research; "
         f"'diagnostics'/'run system status'/'health check'/'test tools'/'fix my setup' -> diagnostics_report; "
         f"'reddit X'/'subreddit X' -> check_reddit; "
+         f"'todo X'/'add task'/'track this' -> todo_add; 'list todos'/'what tasks'/'to-do' -> todo_list; 'mark todo done' -> todo_mark; "
         f"'code X'/'build X'/'write X X'/'create X X'/'fix the bug in <path>'/'repair <path>'/'add feature to <path>' -> dispatch_coder_swarm (pass the full file path as `path` when the user names one, `execute=True` only if asked to run it); "
         f"Otherwise do NOT call a tool -- just answer the user's message directly. "
         f"Do NOT invent numbers; quote only what the tool returns. "
@@ -1424,6 +1490,8 @@ def chat():
             else:
                 sys_prompt += 'MODE: BLUE PILL. Comfort them. Restore the illusion. Status quo maintained.'
         
+        sys_prompt += _local_grounding_note()
+
         history = load_memories()
         
         # Inject Semantic Context
@@ -1483,6 +1551,8 @@ def chat():
 
         save_memory('user', msg)
         save_memory('model', reply)
+        if run_tools or _MEMORY_INTENT_RE.search(msg or ''):
+            _enqueue_session_note(msg, reply)
         return jsonify({'response': reply, 'model': used_model})
 
     except Exception as e:
@@ -1568,6 +1638,8 @@ def chat_stream():
             else:
                 sys_prompt += 'MODE: BLUE PILL. Comfort them. Restore the illusion. Status quo maintained.'
         
+        sys_prompt += _local_grounding_note()
+
         history = load_memories()
         recalled_context = semantic_search_memory(msg)
         if not recalled_context and _MEMORY_INTENT_RE.search(msg or ""):
@@ -1657,6 +1729,8 @@ def chat_stream():
             # replayed history and semantic recall.
             if full_reply.strip():
                 save_memory('model', full_reply)
+                if run_tools or _MEMORY_INTENT_RE.search(msg or ''):
+                    _enqueue_session_note(msg, full_reply)
             yield "data: [DONE]\n\n"
 
         return Response(event_stream(), mimetype="text/event-stream")
@@ -1908,6 +1982,7 @@ def bot_event():
 
 if __name__ == '__main__':
     threading.Thread(target=_fact_miner_worker, name='fact-miner', daemon=True).start()
+    threading.Thread(target=_session_note_worker, name='session-note', daemon=True).start()
     # Was host='0.0.0.0', which published every endpoint below -- including the
     # unauthenticated /api/sandbox (arbitrary Python), /api/execute_tool
     # (arbitrary subprocesses via mcp_execute) and computer_use (mouse/keyboard
