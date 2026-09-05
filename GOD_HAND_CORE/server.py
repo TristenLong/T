@@ -2724,8 +2724,11 @@ def api_swarm_run_task():
         return jsonify({
             'status': 'PASSED' if proc.returncode == 0 else 'FAILED',
             'returncode': proc.returncode,
+            'exit_code': proc.returncode,
             'duration_ms': duration_ms,
             'output': output.strip(),
+            'stdout': proc.stdout,
+            'stderr': proc.stderr,
             'filename': os.path.basename(task_file)
         })
     except subprocess.TimeoutExpired:

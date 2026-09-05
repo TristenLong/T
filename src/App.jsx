@@ -286,11 +286,11 @@ function App() {
         .catch(() => setStatus('LOCAL_CORE_ACTIVE'));
 
       fetch('/api/stats')
-        .then(r => r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status)))
+        .then(r => r.ok ? r.json() : null)
         .then(d => {
-          if (!d.error) setStats(d);
+          if (d && !d.error) setStats(d);
         })
-        .catch(console.error);
+        .catch(console.debug);
     };
     const int = setInterval(pulse, 3000);
     pulse();
@@ -2650,11 +2650,11 @@ function App() {
                           }}
                         >
                           <div style={{ fontWeight: 'bold', marginBottom: '4px' }}>
-                            STATUS: {result.status} | EXIT CODE: {result.exit_code ?? 'N/A'} | DURATION: {result.duration_ms}ms
+                            STATUS: {result.status} | EXIT: {result.exit_code ?? result.returncode ?? 0} | {result.duration_ms}ms
                           </div>
-                          {(result.stdout || result.stderr || result.error) && (
+                          {(result.output || result.stdout || result.stderr || result.error) && (
                             <pre style={{ margin: 0, whiteSpace: 'pre-wrap', maxHeight: '100px', overflowY: 'auto', color: '#AAA' }}>
-                              {(result.stdout || result.stderr || result.error).trim()}
+                              {(result.output || result.stdout || result.stderr || result.error).trim()}
                             </pre>
                           )}
                         </div>

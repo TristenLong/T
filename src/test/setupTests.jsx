@@ -23,6 +23,8 @@ globalThis.speechSynthesis = {
 
 // Mock fetch API
 globalThis.fetch = vi.fn().mockResolvedValue({
+  ok: true,
+  status: 200,
   json: vi.fn().mockResolvedValue({
     cpu: 10,
     ram: 45,
@@ -51,7 +53,7 @@ vi.mock('@react-three/drei', () => {
   return {
     PerspectiveCamera: ({ children }) => <div data-testid="mock-camera">{children}</div>,
     Stars: () => <div data-testid="mock-stars" />,
-    MeshDistortMaterial: (props) => <meshDistortMaterial {...props} />,
+    MeshDistortMaterial: (props) => <div data-testid="mock-distort-material" {...props} />,
     Icosahedron: ({ children }) => <div data-testid="mock-icosahedron">{children}</div>,
     TorusKnot: ({ children }) => <div data-testid="mock-torus-knot">{children}</div>,
   };
