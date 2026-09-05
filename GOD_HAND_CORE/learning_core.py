@@ -69,7 +69,7 @@ def auto_extract_and_learn(text: str) -> list:
     """Uses LLM to extract semantic triplets (Subject, Predicate, Object) and stores them."""
     gemini_key = os.getenv("GEMINI_API_KEY")
     openai_key = os.getenv("OPENAI_API_KEY")
-    model = os.getenv("JESTER_PRIMARY_LLM", "gemini-3.1-pro")
+    model = os.getenv("JESTER_PRIMARY_LLM", "gemini-3.5-flash-lite")
     
     prompt = (
         "Extract semantic knowledge triplets from the following text in JSON array format: "
@@ -82,9 +82,15 @@ def auto_extract_and_learn(text: str) -> list:
     try:
         if gemini_key:
             client = genai.Client(api_key=gemini_key)
-            res = client.models.generate_content(model=model, contents=prompt)
-            clean = res.text.strip().replace("```json", "").replace("```", "").strip()
-            triplets = json.loads(clean)
+            for m in [model, "gemini-3.6-flash", "gemini-3.5-flash", "gemini-flash-lite-latest"]:
+                try:
+                    res = client.models.generate_content(model=m, contents=prompt)
+                    if res and res.text:
+                        clean = res.text.strip().replace("```json", "").replace("```", "").strip()
+                        triplets = json.loads(clean)
+                        break
+                except Exception as me:
+                    continue
         elif openai_key:
             client = OpenAI(api_key=openai_key, base_url=os.getenv("OPENAI_BASE_URL") or None)
             res = client.chat.completions.create(

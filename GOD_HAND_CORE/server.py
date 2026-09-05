@@ -220,7 +220,7 @@ def get_swarm_data():
 
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
-PRIMARY_MODEL = os.getenv('JESTER_PRIMARY_LLM', 'gemini-3.1-pro')
+PRIMARY_MODEL = os.getenv('JESTER_PRIMARY_LLM', 'gemini-3.5-flash-lite')
 OPENAI_MODEL = os.getenv('JESTER_OPENAI_MODEL', 'gpt-4o')
 
 gemini_client = None
@@ -2219,12 +2219,53 @@ def swarm_agent_action():
         return jsonify({'error': str(e)}), 500
 
 
-def _swarm_generate_turn(prompt, sys_prompt, fallback_text):
-    # 1. Try Gemini Client directly
+ACTIVE_SWARM_MODELS = [
+    'gemini-3.5-flash-lite',
+    'gemini-3.6-flash',
+    'gemini-3.5-flash',
+    'gemini-flash-lite-latest',
+    'gemini-flash-latest'
+]
+
+def _swarm_generate_turn(prompt, sys_prompt, fallback_text, include_memory=True):
+    context_prefix = ""
+    if include_memory:
+        try:
+            # 1. Retrieve relevant semantic memories & user preferences
+            recalled = semantic_search_memory(prompt)
+            if recalled:
+                context_prefix += f"\n\n[RECALLED SEMANTIC MEMORIES & ACCUMULATED KNOWLEDGE]:\n{recalled[:700]}"
+
+            # 2. Retrieve recent conversation history
+            history = load_memories()
+            if history:
+                recent_turns = history[-5:]
+                history_lines = []
+                for h in recent_turns:
+                    role = h.get('role', 'user')
+                    txt = h.get('parts', [{}])[0].get('text', '') if h.get('parts') else ''
+                    if txt:
+                        history_lines.append(f"{role.upper()}: {txt[:140]}")
+                if history_lines:
+                    context_prefix += f"\n\n[RECENT INTERACTION HISTORY]:\n" + "\n".join(history_lines)
+
+            # 3. Retrieve recently grown codebase context from swarm_tasks
+            workspace_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+            swarm_dir = os.path.join(workspace_root, 'swarm_tasks')
+            if os.path.exists(swarm_dir):
+                task_files = sorted([f for f in os.listdir(swarm_dir) if f.endswith('.py')], reverse=True)
+                if task_files:
+                    context_prefix += f"\n\n[EXISTING CODEBASE CONTEXT]: Recent artifact 'swarm_tasks/{task_files[0]}' exists in workspace."
+        except Exception as e:
+            logger.debug(f"Memory extraction notice: {e}")
+
+    full_sys = f"{sys_prompt}{context_prefix}\n\nIMPORTANT: Build upon prior knowledge, do NOT give repetitive canned responses, adapt and grow the ideas dynamically." if context_prefix else sys_prompt
+
+    # 1. Try Gemini Client directly with active 2026 models
     if gemini_client:
-        for model in ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]:
+        for model in ACTIVE_SWARM_MODELS:
             try:
-                full_content = f"{sys_prompt}\n\nTask: {prompt}" if sys_prompt else prompt
+                full_content = f"{full_sys}\n\nTask/Directive: {prompt}" if full_sys else prompt
                 resp = gemini_client.models.generate_content(model=model, contents=full_content)
                 if resp and resp.text and resp.text.strip():
                     return resp.text.strip(), model
@@ -2233,7 +2274,7 @@ def _swarm_generate_turn(prompt, sys_prompt, fallback_text):
                 
     # 2. Try router
     try:
-        msgs = [{'role': 'system', 'content': sys_prompt}, {'role': 'user', 'content': prompt}]
+        msgs = [{'role': 'system', 'content': full_sys}, {'role': 'user', 'content': prompt}]
         reply, used_model = generate_completion_with_model(msgs)
         if reply and reply.strip():
             return reply.strip(), used_model
@@ -2252,8 +2293,8 @@ def swarm_agent_chat():
         bot = SWARM_BOTS.get(bot_id, SWARM_BOTS['jester'])
         msg = data.get('message', '')
         
-        fallback = f"[{bot['name']}] Node active on channel. Processing request: '{msg[:50]}...'"
-        reply, used_model = _swarm_generate_turn(msg, bot['system_prompt'], fallback)
+        fallback = f"[{bot['name']}] Node online. Processing objective: '{msg[:60]}' within the unified architecture."
+        reply, used_model = _swarm_generate_turn(msg, bot['system_prompt'], fallback, include_memory=True)
             
         save_memory('user', f"[{bot['name']}_CHAT] {msg}")
         save_memory('model', f"[{bot['name']}_REPLY] {reply}")
@@ -2500,8 +2541,48 @@ def api_swarm_execute_consensus():
         return jsonify({'error': 'Target file must be within the workspace'}), 400
 
     if not code:
-        prompt = f"Write production code to execute the swarm consensus on topic: '{topic}'. Output ONLY raw executable code without markdown backticks."
-        code, _ = _swarm_generate_turn(prompt, SWARM_BOTS['codex']['system_prompt'], f"# Swarm consensus execution for {topic}\nprint('Consensus action completed.')\n")
+        # Check existing code in swarm_tasks to enable progressive code growth
+        prior_code = ""
+        swarm_dir = os.path.join(workspace_root, 'swarm_tasks')
+        if os.path.exists(swarm_dir):
+            existing_tasks = sorted([f for f in os.listdir(swarm_dir) if f.endswith('.py')], reverse=True)
+            if existing_tasks:
+                latest_path = os.path.join(swarm_dir, existing_tasks[0])
+                try:
+                    with open(latest_path, 'r', encoding='utf-8') as pf:
+                        prior_code = pf.read()[:2000]
+                except Exception:
+                    pass
+
+        growth_context = ""
+        if prior_code:
+            growth_context = f"\n\n[PRIOR CODEBASE ARTIFACT]:\n```python\n{prior_code}\n```\nDIRECTIVE: Expand, advance, and grow this code with new capabilities, robust architecture, and comprehensive tests."
+
+        prompt = (
+            f"You are CODEX, senior engineer implementing the Swarm consensus for topic: '{topic}'.{growth_context}\n"
+            f"Write robust, production-grade Python code that fulfills this objective. "
+            f"Implement real logic, proper classes/functions, error handling, and runnable unit test assertions at the bottom. "
+            f"Output ONLY executable Python code with NO markdown formatting, NO backticks."
+        )
+        fallback_code = (
+            f"# Swarm Consensus Execution Module for: {topic}\n"
+            f"import unittest\n\n"
+            f"class SwarmTaskEngine:\n"
+            f"    def __init__(self, directive='{topic}'):\n"
+            f"        self.directive = directive\n"
+            f"        self.status = 'READY'\n\n"
+            f"    def run(self):\n"
+            f"        self.status = 'EXECUTED'\n"
+            f"        return {{'status': self.status, 'directive': self.directive}}\n\n"
+            f"class TestSwarmTask(unittest.TestCase):\n"
+            f"    def test_run(self):\n"
+            f"        engine = SwarmTaskEngine()\n"
+            f"        res = engine.run()\n"
+            f"        self.assertEqual(res['status'], 'EXECUTED')\n\n"
+            f"if __name__ == '__main__':\n"
+            f"    unittest.main(argv=[''], exit=False)\n"
+        )
+        code, used_m = _swarm_generate_turn(prompt, SWARM_BOTS['codex']['system_prompt'], fallback_code, include_memory=True)
         code = re.sub(r'^```[\w]*\n', '', code.strip())
         code = re.sub(r'\n```$', '', code.strip())
 
@@ -2519,18 +2600,47 @@ def api_swarm_execute_consensus():
                 cwd=workspace_root,
                 timeout=10
             )
-            test_output = 'PASSED (py_compile 0 errors)' if proc.returncode == 0 else f'FAILED: {proc.stderr}'
+            if proc.returncode == 0:
+                test_output = 'PASSED (py_compile 0 errors)'
+            else:
+                # Autonomous self-healing compilation fix by Codex
+                try:
+                    fix_prompt = (
+                        f"Fix this Python syntax error in the following code:\n"
+                        f"Error:\n{proc.stderr}\n\n"
+                        f"Source Code:\n{code}\n\n"
+                        f"Output ONLY the corrected, executable Python code with no markdown fences, no backticks."
+                    )
+                    fixed_code, _ = _swarm_generate_turn(fix_prompt, SWARM_BOTS['codex']['system_prompt'], code, include_memory=False)
+                    fixed_code = re.sub(r'^```[\w]*\n', '', fixed_code.strip())
+                    fixed_code = re.sub(r'\n```$', '', fixed_code.strip())
+                    with open(target_file, 'w', encoding='utf-8') as f:
+                        f.write(fixed_code)
+                    proc2 = subprocess.run(
+                        ['python', '-m', 'py_compile', target_file],
+                        capture_output=True,
+                        text=True,
+                        cwd=workspace_root,
+                        timeout=10
+                    )
+                    if proc2.returncode == 0:
+                        code = fixed_code
+                        test_output = 'PASSED (Auto-healed by Codex)'
+                    else:
+                        test_output = f'FAILED: {proc2.stderr}'
+                except Exception as fix_err:
+                    test_output = f'FAILED: {proc.stderr} (Fix error: {fix_err})'
             
         git_output = 'Skipped'
         if commit:
             subprocess.run(['git', 'add', target_file], cwd=workspace_root, capture_output=True, text=True)
-            g_proc = subprocess.run(['git', 'commit', '-m', commit_msg], cwd=workspace_root, capture_output=True, text=True)
-            git_output = g_proc.stdout if g_proc.returncode == 0 else g_proc.stderr
+        rel_path = os.path.relpath(target_file, workspace_root)
+        save_memory('model', f"[CODE GROWN: {rel_path}] Topic: {topic}. Size: {len(code)} bytes. Syntax check: {test_output}")
 
         return jsonify({
             'status': 'SUCCESS',
             'topic': topic,
-            'target_file': os.path.relpath(target_file, workspace_root),
+            'target_file': rel_path,
             'bytes_written': len(code.encode('utf-8')),
             'test_output': test_output,
             'git_output': git_output,
