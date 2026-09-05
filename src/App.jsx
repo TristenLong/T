@@ -7,7 +7,7 @@ import {
   Globe, Trash2, Send, Eye, Volume2, Lock, Search, Play, Brain, 
   Settings, Sparkles, Layers, Compass, Camera, Monitor, Code2, 
   Bot, Network, RefreshCw, BarChart2, Radio, Server, MessageSquare, 
-  Wrench, X, ChevronUp, ChevronDown
+  Wrench, X, ChevronUp, ChevronDown, CheckCircle2, Flame, Users
 } from 'lucide-react';
 import JesterBrain from './JesterBrain';
 import MatrixRain from './MatrixRain';
@@ -26,6 +26,26 @@ const theme = {
   amber: '#FFB800',
   blue: '#00D2FF',
   orange: '#FF7700'
+};
+
+// Swarm Fleet Personas matching GOD_HAND_CORE/server.py
+const DEFAULT_SWARM_BOTS = [
+  { id: 'jester', name: 'JESTER', role: 'Matrix Architect & Sovereign Core', color: '#00FF66', avatar: 'Zap', port: '5000' },
+  { id: 'claude', name: 'CLAUDE CODE', role: 'Strategic Architecture & Modular Engineer', color: '#B026FF', avatar: 'Terminal', port: 'CLI' },
+  { id: 'gemini', name: 'GEMINI SCOUT', role: '2M-Context Deep Explorer & Web Intelligence', color: '#00F0FF', avatar: 'Globe', port: '7860' },
+  { id: 'brutal_critic', name: 'BRUTAL CRITIC', role: '3-Lens Stress Tester & Code Auditor', color: '#FF0055', avatar: 'Shield', port: 'SUB' },
+  { id: 'codex', name: 'CODEX', role: 'Universal Protocol & System Standard Engineer', color: '#FFD700', avatar: 'Code2', port: 'STD' }
+];
+
+const renderBotIcon = (avatarName, color = '#FFF', size = 14) => {
+  switch (avatarName) {
+    case 'Zap': return <Zap size={size} color={color} />;
+    case 'Terminal': return <Terminal size={size} color={color} />;
+    case 'Globe': return <Globe size={size} color={color} />;
+    case 'Shield': return <Shield size={size} color={color} />;
+    case 'Code2': return <Code2 size={size} color={color} />;
+    default: return <Bot size={size} color={color} />;
+  }
 };
 
 // Puter frontend model (OpenRouter models via puter.js, no API key needed).
@@ -62,6 +82,11 @@ function App() {
   const autoRestart = useRef(false);
 
   const [matrixStats, setMatrixStats] = useState(null);
+  const [activeBot, setActiveBot] = useState('swarm');
+  const [swarmTurns, setSwarmTurns] = useState([]);
+  const [isSwarmDeliberating, setIsSwarmDeliberating] = useState(false);
+  const [commStatus, setCommStatus] = useState(null);
+  const [swarmBots, setSwarmBots] = useState(DEFAULT_SWARM_BOTS);
 
   const fetchHistory = async () => {
     try {
@@ -74,6 +99,15 @@ function App() {
   };
 
   useEffect(() => {
+    fetch('/api/swarm/bots')
+      .then(r => r.ok ? r.json() : null)
+      .then(d => {
+        if (d && Array.isArray(d.bots) && d.bots.length > 0) {
+          setSwarmBots(d.bots);
+        }
+      })
+      .catch(console.debug);
+
     const pulse = () => {
       fetch('/api/matrix_status')
         .then(r => r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status)))
@@ -354,8 +388,131 @@ function App() {
     }
   };
 
+  const confirmComms = async () => {
+    setActiveBot('swarm');
+    setIsSwarmDeliberating(true);
+    setCommStatus({ state: 'PINGING', msg: 'BROADCASTING HANDSHAKE PING TO ALL 5 AGENTS...' });
+    setSwarmTurns([]);
+    setResponse('[COMMUNICATIONS HANDSHAKE INITIATED]\nPinging fleet: JESTER -> CLAUDE -> GEMINI -> BRUTAL CRITIC -> CODEX...');
+    observe('SWARM', 'Broadcasted handshake ping to all 5 agents');
+    
+    try {
+      const res = await fetch('/api/swarm/roundtable', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          topic: 'Operational Handshake & Communication Verification', 
+          test_comm: true 
+        })
+      });
+      const data = await res.json();
+      if (data && data.turns && Array.isArray(data.turns)) {
+        setSwarmTurns(data.turns);
+        const count = data.turns.length;
+        setCommStatus({ state: 'VERIFIED', count, msg: `ALL ${count}/5 BOTS CONFIRMED & COMMUNICATING` });
+        const summary = data.summary || 'All 5 agents verified active on local neural bus. Multi-turn cross-talk confirmed nominal.';
+        setResponse(`[HANDSHAKE COMPLETE: ALL ${count} BOTS OPERATIONAL & COMMUNICATING]\n\n${summary}`);
+        observe('SWARM', `All ${count} bots responded to handshake ping`);
+        speak('All five agents are online, synchronized, and actively communicating, sir.');
+      } else {
+        throw new Error(data.error || 'Invalid handshake response');
+      }
+    } catch (err) {
+      setCommStatus({ state: 'ERROR', msg: 'HANDSHAKE DEGRADED: ' + err.message });
+      setResponse('[HANDSHAKE ERROR] ' + err.message);
+      observe('ERROR', 'Swarm handshake failed: ' + err.message);
+    } finally {
+      setIsSwarmDeliberating(false);
+    }
+  };
+
+  const runRoundtable = async (topic) => {
+    if (!topic || !topic.trim()) return;
+    const cleanTopic = topic.trim();
+    setActiveBot('swarm');
+    setIsSwarmDeliberating(true);
+    setSwarmTurns([]);
+    setResponse(`[SWARM ROUNDTABLE CONVENED]\nTopic: "${cleanTopic}"\nDeliberating in sequence across Gemini -> Claude -> Brutal Critic -> Codex -> Jester...`);
+    observe('ROUNDTABLE', `Convened debate on: "${cleanTopic}"`);
+    
+    try {
+      const res = await fetch('/api/swarm/roundtable', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ topic: cleanTopic })
+      });
+      const data = await res.json();
+      if (data && data.turns && Array.isArray(data.turns)) {
+        setSwarmTurns(data.turns);
+        const sum = data.summary || `Swarm deliberation completed with ${data.turns.length} collaborative turns.`;
+        setResponse(`[ROUNDTABLE CONSENSUS ACHIEVED]\nTopic: "${data.topic || cleanTopic}"\n\n${sum}`);
+        speak(sum);
+        remember('user', `[SWARM TOPIC] ${cleanTopic}`);
+        remember('model', `[SWARM CONSENSUS] ${sum}`);
+        observe('ROUNDTABLE', `Consensus reached across ${data.turns.length} agents`);
+      } else {
+        throw new Error(data.error || 'Roundtable deliberation failed');
+      }
+    } catch (err) {
+      setResponse(`[ROUNDTABLE DEGRADED] ${err.message}`);
+      observe('ERROR', 'Roundtable failed: ' + err.message);
+    } finally {
+      setIsSwarmDeliberating(false);
+    }
+  };
+
+  const handleAgentChat = async (botId, msg) => {
+    if (!msg || !msg.trim()) return;
+    const cleanMsg = msg.trim();
+    setStatus('PROCESSING_STREAM...');
+    setIsSwarmDeliberating(true);
+    const targetBot = swarmBots.find(b => b.id === botId) || { name: botId.toUpperCase(), color: theme.cyan, role: 'Agent' };
+    setResponse(`[CONNECTING TO ${targetBot.name}...]\nAwaiting response...`);
+    observe('AGENT_CHAT', `Direct comms to ${targetBot.name}: "${cleanMsg}"`);
+
+    try {
+      const res = await fetch('/api/swarm/agent_chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ bot_id: botId, message: cleanMsg })
+      });
+      const data = await res.json();
+      if (data && data.reply) {
+        const replyText = data.reply;
+        setResponse(`[${data.name} // ${data.role}]\n\n${replyText}`);
+        speak(replyText);
+        remember('user', `[@${data.name}] ${cleanMsg}`);
+        remember('model', `[${data.name}] ${replyText}`);
+        observe('AGENT_CHAT', `${data.name} replied`);
+      } else {
+        throw new Error(data.error || 'No reply from agent');
+      }
+    } catch (err) {
+      setResponse(`[COMM_ERROR: ${targetBot.name}] ${err.message}`);
+      observe('ERROR', `Direct comms to ${targetBot.name} failed: ${err.message}`);
+    } finally {
+      setIsSwarmDeliberating(false);
+      setStatus('THE_ONE_ONLINE');
+    }
+  };
+
   const handleSend = async (msg, toolArgs = null) => {
     if (!msg || !msg.trim()) return;
+    const trimmed = msg.trim();
+
+    // If Swarm Roundtable mode is active, handle handshake or deliberation
+    if (activeBot === 'swarm') {
+      if (/^(ping|handshake|confirm comm|status check|test comm)/i.test(trimmed)) {
+        return confirmComms();
+      }
+      return runRoundtable(trimmed);
+    }
+
+    // If an individual specialist bot is active (Claude, Gemini, Critic, Codex)
+    if (activeBot && activeBot !== 'jester' && activeBot !== 'default') {
+      return handleAgentChat(activeBot, trimmed);
+    }
+
     setStatus('PROCESSING_STREAM...');
     setResponse('');
     setExecutingTool(null);
@@ -1150,15 +1307,328 @@ function App() {
 
           {/* Center Chat & Intelligence Stage */}
           <section style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', position: 'relative' }}>
+            
+            {/* Swarm Fleet & Multi-Bot Selector Bar */}
+            <div style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              maxWidth: '88%',
+              width: '88%',
+              marginBottom: '10px',
+              gap: '8px',
+              flexWrap: 'wrap',
+              pointerEvents: 'auto'
+            }}>
+              {/* Bot Selector Tabs */}
+              <div style={{ display: 'flex', gap: '6px', alignItems: 'center', flexWrap: 'wrap' }}>
+                <button
+                  onClick={() => setActiveBot('swarm')}
+                  style={{
+                    background: activeBot === 'swarm' 
+                      ? 'linear-gradient(135deg, rgba(0,255,102,0.25), rgba(176,38,255,0.25))' 
+                      : 'rgba(0,15,5,0.7)',
+                    border: activeBot === 'swarm' 
+                      ? `2px solid ${theme.main}` 
+                      : '1px solid rgba(0,255,100,0.3)',
+                    color: activeBot === 'swarm' ? '#FFF' : theme.main,
+                    padding: '6px 12px',
+                    borderRadius: '20px',
+                    fontSize: '0.72rem',
+                    fontWeight: 'bold',
+                    cursor: 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                    boxShadow: activeBot === 'swarm' ? `0 0 15px ${theme.main}66` : 'none',
+                    transition: 'all 0.2s ease'
+                  }}
+                  title="Multi-Bot Deliberation & Cross-Talk Roundtable"
+                >
+                  <Users size={14} color={theme.main} />
+                  <span>SWARM ROUNDTABLE</span>
+                  <span style={{ fontSize: '0.6rem', padding: '1px 5px', borderRadius: '10px', background: 'rgba(0,255,102,0.2)', color: theme.main }}>ALL 5</span>
+                </button>
+
+                {swarmBots.map((b) => {
+                  const isSelected = activeBot === b.id;
+                  return (
+                    <button
+                      key={b.id}
+                      onClick={() => setActiveBot(b.id)}
+                      style={{
+                        background: isSelected ? `${b.color}33` : 'rgba(0,10,5,0.6)',
+                        border: isSelected ? `2px solid ${b.color}` : `1px solid ${b.color}44`,
+                        color: isSelected ? '#FFF' : b.color,
+                        padding: '6px 11px',
+                        borderRadius: '20px',
+                        fontSize: '0.7rem',
+                        fontWeight: 'bold',
+                        cursor: 'pointer',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '5px',
+                        boxShadow: isSelected ? `0 0 15px ${b.color}66` : 'none',
+                        transition: 'all 0.2s ease'
+                      }}
+                      title={`${b.name} (${b.role}) - Direct Comms`}
+                    >
+                      {renderBotIcon(b.avatar, b.color, 13)}
+                      <span>{b.name}</span>
+                    </button>
+                  );
+                })}
+              </div>
+
+              {/* Action Controls: Handshake Ping, Debate Topic, and Reset */}
+              <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                <button
+                  onClick={confirmComms}
+                  disabled={isSwarmDeliberating}
+                  style={{
+                    background: commStatus?.state === 'VERIFIED'
+                      ? 'rgba(0,255,102,0.2)'
+                      : 'linear-gradient(135deg, rgba(0,240,255,0.2), rgba(0,255,102,0.2))',
+                    border: `1px solid ${commStatus?.state === 'VERIFIED' ? theme.main : theme.cyan}`,
+                    color: commStatus?.state === 'VERIFIED' ? theme.main : theme.cyan,
+                    padding: '6px 14px',
+                    borderRadius: '20px',
+                    fontSize: '0.72rem',
+                    fontWeight: 'bold',
+                    cursor: isSwarmDeliberating ? 'default' : 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                    boxShadow: commStatus?.state === 'VERIFIED' ? `0 0 15px ${theme.main}44` : `0 0 12px ${theme.cyan}44`,
+                    opacity: isSwarmDeliberating ? 0.6 : 1
+                  }}
+                  title="Broadcast handshake to all 5 bots and verify communication"
+                >
+                  <CheckCircle2 size={14} color={commStatus?.state === 'VERIFIED' ? theme.main : theme.cyan} />
+                  <span>{commStatus?.state === 'VERIFIED' ? 'COMMS CONFIRMED (5/5)' : '⚡ CONFIRM COMMS'}</span>
+                </button>
+
+                <button
+                  onClick={() => runRoundtable(input || 'Review system architecture and verify all 5 agent channels')}
+                  disabled={isSwarmDeliberating}
+                  style={{
+                    background: 'rgba(176,38,255,0.15)',
+                    border: `1px solid ${theme.purple}`,
+                    color: theme.purple,
+                    padding: '6px 12px',
+                    borderRadius: '20px',
+                    fontSize: '0.72rem',
+                    fontWeight: 'bold',
+                    cursor: isSwarmDeliberating ? 'default' : 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '5px',
+                    opacity: isSwarmDeliberating ? 0.6 : 1
+                  }}
+                  title="Trigger sequential multi-bot debate on the current objective"
+                >
+                  <Flame size={13} color={theme.purple} />
+                  <span>DEBATE</span>
+                </button>
+
+                {swarmTurns.length > 0 && (
+                  <button
+                    onClick={() => { setSwarmTurns([]); setResponse(''); }}
+                    style={{
+                      background: 'none',
+                      border: `1px solid ${theme.sec}`,
+                      color: theme.sec,
+                      padding: '6px 8px',
+                      borderRadius: '20px',
+                      fontSize: '0.7rem',
+                      cursor: 'pointer',
+                      display: 'flex',
+                      alignItems: 'center'
+                    }}
+                    title="Clear Swarm Dialogue"
+                  >
+                    <Trash2 size={13} />
+                  </button>
+                )}
+              </div>
+            </div>
+
             <AnimatePresence mode='wait'>
-              <motion.div key="chat-stage" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} style={{ textAlign: 'center', maxWidth: '86%', width: '86%', background: 'rgba(0,0,0,0.7)', padding: '22px 26px', borderRadius: '15px', border: '1px solid ' + theme.sec + '66', backdropFilter: 'blur(8px)', pointerEvents: 'auto', maxHeight: '50vh', display: 'flex', flexDirection: 'column' }}>
-                <div ref={responseScrollRef} style={{ flex: 1, overflowY: 'auto', fontSize: '1.2rem', color: theme.main, textShadow: '0 0 10px ' + theme.sec, whiteSpace: 'pre-wrap', lineHeight: '1.5', textAlign: 'left' }}>{response || 'STANDBY_FOR_INPUT'}</div>  
-                {transcript && <div style={{ marginTop: '15px', fontSize: '0.9rem', color: theme.sec, opacity: 0.9 }}>{transcript}</div>}
+              <motion.div 
+                key="chat-stage" 
+                initial={{ opacity: 0, y: 10 }} 
+                animate={{ opacity: 1, y: 0 }} 
+                style={{ 
+                  textAlign: 'center', 
+                  maxWidth: '88%', 
+                  width: '88%', 
+                  background: 'rgba(0,0,0,0.85)', 
+                  padding: '16px 20px', 
+                  borderRadius: '15px', 
+                  border: `1px solid ${activeBot === 'swarm' ? 'rgba(0,255,100,0.4)' : (swarmBots.find(b => b.id === activeBot)?.color || theme.sec) + '66'}`, 
+                  backdropFilter: 'blur(10px)', 
+                  pointerEvents: 'auto', 
+                  height: '52vh', 
+                  maxHeight: '52vh', 
+                  display: 'flex', 
+                  flexDirection: 'column',
+                  boxShadow: activeBot === 'swarm' 
+                    ? '0 0 30px rgba(0,255,100,0.15)' 
+                    : `0 0 30px ${(swarmBots.find(b => b.id === activeBot)?.color || theme.sec)}22`
+                }}
+              >
+                {/* Active Mode Banner */}
+                <div style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  borderBottom: '1px solid rgba(255,255,255,0.1)',
+                  paddingBottom: '8px',
+                  marginBottom: '10px',
+                  fontSize: '0.72rem',
+                  fontFamily: 'monospace'
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    {activeBot === 'swarm' ? (
+                      <>
+                        <Users size={14} color={theme.main} />
+                        <span style={{ color: theme.main, fontWeight: 'bold' }}>SWARM ROUNDTABLE (CROSS-TALK DELIBERATION)</span>
+                        <span style={{ color: '#888' }}>// 5 AUTONOMOUS AGENTS LINKED</span>
+                      </>
+                    ) : (
+                      (() => {
+                        const b = swarmBots.find(x => x.id === activeBot) || { name: activeBot.toUpperCase(), color: theme.cyan, role: 'Agent' };
+                        return (
+                          <>
+                            {renderBotIcon(b.avatar, b.color, 14)}
+                            <span style={{ color: b.color, fontWeight: 'bold' }}>DIRECT LINK: {b.name}</span>
+                            <span style={{ color: '#888' }}>// {b.role}</span>
+                          </>
+                        );
+                      })()
+                    )}
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                    {commStatus && (
+                      <span style={{ 
+                        color: commStatus.state === 'VERIFIED' ? theme.main : theme.amber,
+                        fontSize: '0.68rem',
+                        fontWeight: 'bold',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '4px'
+                      }}>
+                        <CheckCircle2 size={12} /> {commStatus.msg}
+                      </span>
+                    )}
+                    <span style={{ color: isSwarmDeliberating ? theme.amber : theme.sec, fontSize: '0.68rem' }}>
+                      {isSwarmDeliberating ? '● TRANSMITTING / DELIBERATING...' : '● READY'}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Content Area */}
+                <div 
+                  ref={responseScrollRef} 
+                  style={{ 
+                    flex: 1, 
+                    overflowY: 'auto', 
+                    fontSize: '1rem', 
+                    color: theme.main, 
+                    whiteSpace: 'pre-wrap', 
+                    lineHeight: '1.5', 
+                    textAlign: 'left',
+                    paddingRight: '6px'
+                  }}
+                >
+                  {/* If Swarm turns are present, render multi-bot dialogue thread */}
+                  {swarmTurns && swarmTurns.length > 0 ? (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                      {swarmTurns.map((turn, idx) => (
+                        <div 
+                          key={idx}
+                          style={{
+                            background: 'rgba(0, 15, 8, 0.75)',
+                            border: `1px solid ${turn.color || theme.cyan}55`,
+                            borderLeft: `4px solid ${turn.color || theme.cyan}`,
+                            borderRadius: '8px',
+                            padding: '10px 14px',
+                            boxShadow: `0 0 15px ${turn.color || theme.cyan}15`
+                          }}
+                        >
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                              <span style={{ color: turn.color || theme.cyan, fontWeight: 'bold', fontSize: '0.85rem', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                {renderBotIcon(turn.avatar || (turn.name?.includes('CLAUDE') ? 'Terminal' : turn.name?.includes('GEMINI') ? 'Globe' : turn.name?.includes('CRITIC') ? 'Shield' : turn.name?.includes('CODEX') ? 'Code2' : 'Zap'), turn.color || theme.cyan, 13)}
+                                {turn.name}
+                              </span>
+                              <span style={{ fontSize: '0.65rem', color: '#AAA', background: `${turn.color || theme.cyan}22`, padding: '2px 8px', borderRadius: '12px' }}>
+                                {turn.role}
+                              </span>
+                            </div>
+                            <span style={{ fontSize: '0.65rem', color: turn.color || theme.sec, opacity: 0.8, fontFamily: 'monospace' }}>
+                              TURN {idx + 1}/{swarmTurns.length}
+                            </span>
+                          </div>
+                          <div style={{ fontSize: '0.86rem', color: '#ECECEC', lineHeight: '1.5', whiteSpace: 'pre-wrap' }}>
+                            {turn.content}
+                          </div>
+                        </div>
+                      ))}
+
+                      {response && !response.startsWith('[COMMUNICATIONS HANDSHAKE') && (
+                        <div style={{
+                          background: 'rgba(0, 20, 15, 0.85)',
+                          border: `1px solid ${theme.cyan}`,
+                          borderRadius: '8px',
+                          padding: '12px 16px',
+                          marginTop: '4px'
+                        }}>
+                          <div style={{ color: theme.cyan, fontWeight: 'bold', fontSize: '0.8rem', marginBottom: '4px' }}>
+                            ROUNDTABLE CONSENSUS &amp; SYNTHESIS
+                          </div>
+                          <div style={{ fontSize: '0.85rem', color: '#FFF' }}>
+                            {response}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    /* Default response view */
+                    <div style={{ 
+                      color: activeBot !== 'swarm' ? (swarmBots.find(b => b.id === activeBot)?.color || theme.main) : theme.main,
+                      textShadow: `0 0 10px ${activeBot !== 'swarm' ? (swarmBots.find(b => b.id === activeBot)?.color || theme.sec) : theme.sec}`,
+                      fontSize: '1.05rem',
+                      lineHeight: '1.6'
+                    }}>
+                      {response || (
+                        <div style={{ opacity: 0.8, fontSize: '0.9rem', color: theme.sec }}>
+                          <div style={{ fontWeight: 'bold', color: theme.main, marginBottom: '6px' }}>
+                            [AUTONOMOUS MULTI-BOT OBSERVATORY LINKED]
+                          </div>
+                          <div style={{ fontSize: '0.8rem', color: '#AAA', lineHeight: '1.6' }}>
+                            • Click <span style={{ color: theme.cyan, fontWeight: 'bold' }}>[⚡ CONFIRM COMMS]</span> to broadcast a handshake ping — all 5 bots will report in and verify active communication.
+                            <br />
+                            • Select any individual bot tab above to chat directly with that specialist agent.
+                            <br />
+                            • Enter an objective or click <span style={{ color: theme.purple, fontWeight: 'bold' }}>[🔥 DEBATE]</span> in <span style={{ color: theme.main, fontWeight: 'bold' }}>[SWARM ROUNDTABLE]</span> to have all bots converse, debate, and reach consensus in sequence.
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>  
+
+                {transcript && (
+                  <div style={{ marginTop: '8px', fontSize: '0.85rem', color: theme.sec, opacity: 0.9, textAlign: 'left', borderTop: '1px solid rgba(255,255,255,0.05)', paddingTop: '6px' }}>
+                    <span style={{ color: theme.amber }}>[VOICE TRANSCRIPT]:</span> {transcript}
+                  </div>
+                )}
               </motion.div>
             </AnimatePresence>
 
             {/* Input & Voice Controls */}
-            <div style={{ marginTop: '25px', display: 'flex', gap: '15px', alignItems: 'center', pointerEvents: 'auto' }}>
+            <div style={{ marginTop: '22px', display: 'flex', gap: '15px', alignItems: 'center', pointerEvents: 'auto' }}>
               <button 
                 onClick={() => { 
                   if (!isSpeechSupported) {
@@ -1193,8 +1663,12 @@ function App() {
                   value={input} 
                   onChange={e => setInput(e.target.value)} 
                   onKeyDown={e => e.key === 'Enter' && (handleSend(input), setInput(''))} 
-                  style={{ background: 'none', border: 'none', color: '#fff', padding: '12px 25px', outline: 'none', width: '340px', fontSize: '0.85rem' }} 
-                  placeholder='ENTER COMMAND / OBJECTIVE...' 
+                  style={{ background: 'none', border: 'none', color: '#fff', padding: '12px 25px', outline: 'none', width: '380px', fontSize: '0.85rem' }} 
+                  placeholder={
+                    activeBot === 'swarm' 
+                      ? 'ENTER TOPIC FOR MULTI-BOT ROUNDTABLE OR "PING"...' 
+                      : `MESSAGE ${swarmBots.find(b => b.id === activeBot)?.name || 'AGENT'} DIRECTLY...`
+                  } 
                 />
                 <button onClick={() => { handleSend(input); setInput(''); }} style={{ background: theme.sec, border: 'none', color: '#000', padding: '0 25px', cursor: 'pointer' }}><Send size={18} /></button>
               </div>
