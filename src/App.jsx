@@ -16,6 +16,14 @@ import SelfAwarenessTest from './components/SelfAwarenessTest';
 import ObservatoryTelemetry from './components/ObservatoryTelemetry';
 import { puter } from '@heyputer/puter.js';
 
+if (typeof puter !== 'undefined' && puter) {
+  try {
+    puter.quiet = true;
+  } catch {
+    // quiet fallback
+  }
+}
+
 const theme = { 
   bg: 'transparent', 
   main: '#00FF66', 
@@ -1586,7 +1594,20 @@ function App() {
 
       {/* Background 3D Canvas */}
       <div style={{ position: 'absolute', inset: 0, zIndex: 0 }}>
-        <Canvas>
+        <Canvas
+          gl={{
+            powerPreference: 'default',
+            antialias: false,
+            preserveDrawingBuffer: false
+          }}
+          onCreated={({ gl }) => {
+            if (gl && gl.domElement) {
+              gl.domElement.addEventListener('webglcontextlost', (e) => {
+                e.preventDefault();
+              }, false);
+            }
+          }}
+        >
           <PerspectiveCamera makeDefault position={[0, 0, 5]} />
           <Stars radius={100} depth={50} count={3000} factor={4} saturation={1} fade speed={1} />
           <Suspense fallback={null}>

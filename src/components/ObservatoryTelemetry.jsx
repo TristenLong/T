@@ -43,77 +43,107 @@ export default function ObservatoryTelemetry({ onAnomalyChange }) {
   const alarmRef = useRef(null);
   const alarmPlayedRef = useRef(false);
 
+  const audioEnabledRef = useRef(audioEnabled);
+  audioEnabledRef.current = audioEnabled;
+  const isAnomalyRef = useRef(isAnomaly);
+  isAnomalyRef.current = isAnomaly;
+  const onAnomalyChangeRef = useRef(onAnomalyChange);
+  onAnomalyChangeRef.current = onAnomalyChange;
+
   useEffect(() => {
-    alarmRef.current = new Audio('https://actions.google.com/sounds/v1/alarms/spaceship_alarm.ogg');
+    try {
+      alarmRef.current = new Audio('https://actions.google.com/sounds/v1/alarms/spaceship_alarm.ogg');
+    } catch {
+      // quiet fallback
+    }
     
-    wsRef.current = new WebSocket('ws://localhost:8765');
-    wsRef.current.onmessage = (event) => {
-      try {
-        const payload = JSON.parse(event.data);
-        if (payload.type !== 'science_telemetry') return;
+    let socket = null;
+    try {
+      socket = new WebSocket('ws://localhost:8765');
+      wsRef.current = socket;
 
-        const m = payload.metrics;
-        const a = payload.analytics;
-        setMetrics(m);
-        setAnalytics(a);
-        
-        const anomaly = a.anomaly_detected || false;
-        
-        if (anomaly !== isAnomaly) {
-            setIsAnomaly(anomaly);
-            if (onAnomalyChange) onAnomalyChange(anomaly);
+      socket.onerror = () => {
+        // Quiet fallback when realtime science engine is offline
+      };
+
+      socket.onmessage = (event) => {
+        try {
+          const payload = JSON.parse(event.data);
+          if (payload.type !== 'science_telemetry') return;
+
+          const m = payload.metrics || {};
+          const a = payload.analytics || {};
+          setMetrics(m);
+          setAnalytics(a);
+          
+          const anomaly = a.anomaly_detected || false;
+          
+          if (anomaly !== isAnomalyRef.current) {
+              setIsAnomaly(anomaly);
+              if (onAnomalyChangeRef.current) onAnomalyChangeRef.current(anomaly);
+          }
+
+          setHistory(prev => {
+            const newHistory = [...prev, {
+              entropy: m.shannon_entropy || 0,
+              anomaly: anomaly
+            }];
+            if (newHistory.length > MAX_POINTS) newHistory.shift();
+            return newHistory;
+          });
+
+          const newLog = {
+            time: new Date((payload.timestamp || Date.now() / 1000) * 1000).toLocaleTimeString(),
+            entropy: (m.shannon_entropy || 0).toFixed(4),
+            ml: a.ml_anomaly_score || 0,
+            fft: a.fft_dominant_amplitude || 0,
+            anomaly
+          };
+          setLogs(prev => [newLog, ...prev].slice(0, 50));
+
+          setFftData([
+              (a.fft_dominant_amplitude || 1) * 0.5,
+              (a.fft_dominant_amplitude || 1) * 1.0,
+              (a.fft_dominant_amplitude || 1) * 2.0,
+              (a.fft_dominant_amplitude || 1) * 1.5,
+              (a.fft_dominant_amplitude || 1) * 0.5
+          ]);
+
+          if (audioEnabledRef.current && audioCtxRef.current && oscillatorRef.current) {
+              if (anomaly) {
+                  if (!alarmPlayedRef.current && alarmRef.current) {
+                      alarmRef.current.play().catch(() => {});
+                      alarmPlayedRef.current = true;
+                  }
+                  oscillatorRef.current.frequency.setTargetAtTime(800 + ((a.fft_dominant_amplitude || 0) * 100), audioCtxRef.current.currentTime, 0.1);
+                  oscillatorRef.current.type = 'sawtooth';
+              } else {
+                  alarmPlayedRef.current = false;
+                  oscillatorRef.current.frequency.setTargetAtTime(432 + (((m.shannon_entropy || 7.95) - 7.95) * 1000), audioCtxRef.current.currentTime, 0.5);
+                  oscillatorRef.current.type = 'sine';
+              }
+          }
+
+        } catch {
+          // quiet fallback
         }
-
-        setHistory(prev => {
-          const newHistory = [...prev, {
-            entropy: m.shannon_entropy || 0,
-            anomaly: anomaly
-          }];
-          if (newHistory.length > MAX_POINTS) newHistory.shift();
-          return newHistory;
-        });
-
-        const newLog = {
-          time: new Date(payload.timestamp * 1000).toLocaleTimeString(),
-          entropy: (m.shannon_entropy || 0).toFixed(4),
-          ml: a.ml_anomaly_score || 0,
-          fft: a.fft_dominant_amplitude || 0,
-          anomaly
-        };
-        setLogs(prev => [newLog, ...prev].slice(0, 50));
-
-        setFftData([
-            (a.fft_dominant_amplitude || 1) * 0.5,
-            (a.fft_dominant_amplitude || 1) * 1.0,
-            (a.fft_dominant_amplitude || 1) * 2.0,
-            (a.fft_dominant_amplitude || 1) * 1.5,
-            (a.fft_dominant_amplitude || 1) * 0.5
-        ]);
-
-        if (audioEnabled && audioCtxRef.current && oscillatorRef.current) {
-            if (anomaly) {
-                if (!alarmPlayedRef.current) {
-                    alarmRef.current.play().catch(()=>console.log("audio blocked"));
-                    alarmPlayedRef.current = true;
-                }
-                oscillatorRef.current.frequency.setTargetAtTime(800 + ((a.fft_dominant_amplitude || 0) * 100), audioCtxRef.current.currentTime, 0.1);
-                oscillatorRef.current.type = 'sawtooth';
-            } else {
-                alarmPlayedRef.current = false;
-                oscillatorRef.current.frequency.setTargetAtTime(432 + (((m.shannon_entropy || 7.95) - 7.95) * 1000), audioCtxRef.current.currentTime, 0.5);
-                oscillatorRef.current.type = 'sine';
-            }
-        }
-
-      } catch (err) {
-        console.error("WS Parse Error", err);
-      }
-    };
+      };
+    } catch {
+      // quiet fallback
+    }
 
     return () => {
-      if (wsRef.current) wsRef.current.close();
+      if (socket) {
+        socket.onopen = null;
+        socket.onmessage = null;
+        socket.onerror = null;
+        socket.onclose = null;
+        if (socket.readyState === WebSocket.OPEN) {
+          socket.close();
+        }
+      }
     };
-  }, [audioEnabled, isAnomaly, onAnomalyChange]);
+  }, []);
 
   const toggleAudio = () => {
     if (!audioEnabled) {

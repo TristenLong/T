@@ -34,8 +34,8 @@ const JesterBrain = ({
     return { ...hues, light: hues.outer };
   }, [isAnomaly, speakingBotId, isDeliberating, activeBot, color]);
   
-  useFrame((state) => {
-    const t = state.clock.getElapsedTime();
+  useFrame(() => {
+    const t = performance.now() * 0.001;
     if (meshRef.current) {
       const rotSpeed = isDeliberating ? 0.5 : 0.2;
       meshRef.current.rotation.x = t * rotSpeed;
