@@ -170,6 +170,67 @@ def tool_completion(messages, tools):
     return content, calls, OPENAI_MODEL
 
 
+def _ollama_vision_model():
+    """Name of an installed vision-capable Ollama model, or None.
+
+    Prefers JESTER_OLLAMA_VISION_MODEL when set and installed, then any model
+    whose name looks vision-capable (vision/llava/-vl). Plain llama3.x MUST NOT
+    be used: it cannot accept image content.
+    """
+    try:
+        tags = requests.get(OLLAMA_TAGS_URL, timeout=5).json().get('models', [])
+    except (requests.RequestException, ValueError):
+        return None
+    names = [m.get('name', '') for m in tags]
+    chosen = os.getenv('JESTER_OLLAMA_VISION_MODEL')
+    if chosen and (chosen in names or any(c in n for c in (chosen,) for n in names if chosen in n)):
+        return chosen
+    for keyword in ('vision', 'llava', '-vl', 'vl-'):
+        for n in names:
+            if keyword in n.lower():
+                return n
+    return None
+
+
+def generate_vision_completion(messages):
+    """Route multimodal (image-bearing) completions to a vision-capable model.
+
+    Puter -> installed Ollama vision model -> real cloud OpenAI. The ordinary
+    text router must never see image content: Ollama's text models return a 400
+    ("Multimodal data provided, but model does not support multimodal
+    requests") and a localhost OPENAI_BASE_URL is just Ollama's /v1 shim.
+    Returns (text, model_name); raises ValueError when no vision backend exists.
+    """
+    if puter_client:
+        try:
+            res = puter_client.chat.completions.create(model=PUTER_MODEL, messages=messages)
+            return res.choices[0].message.content, f"puter:{PUTER_MODEL}"
+        except Exception as e:
+            logger.warning(f"Puter vision attempt failed: {e}. Falling back.")
+
+    vision_model = _ollama_vision_model()
+    if vision_model:
+        try:
+            client = OpenAI(api_key="ollama", base_url=f"{OLLAMA_HOST}/v1")
+            res = client.chat.completions.create(model=vision_model, messages=messages)
+            return res.choices[0].message.content, vision_model
+        except Exception as e:
+            logger.warning(f"Ollama vision attempt failed ({vision_model}): {e}. Falling back.")
+
+    if openai_client and not (OPENAI_BASE_URL and ('127.0.0.1' in OPENAI_BASE_URL or 'localhost' in OPENAI_BASE_URL)):
+        try:
+            res = openai_client.chat.completions.create(model=OPENAI_MODEL, messages=messages)
+            return res.choices[0].message.content, OPENAI_MODEL
+        except Exception as e:
+            raise ValueError(f"Vision request failed on {OPENAI_MODEL}: {e}")
+
+    raise ValueError(
+        "NO_VISION_MODEL_AVAILABLE: No image-capable model is installed or reachable. "
+        "Pull one locally (e.g. `ollama pull llama3.2-vision`) and set "
+        "JESTER_OLLAMA_VISION_MODEL, or point OPENAI_BASE_URL at a real vision-capable endpoint."
+    )
+
+
 def generate_completion_with_model(messages, require_json=False):
     """Same as generate_completion but returns (text, model_name).
 

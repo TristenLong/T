@@ -49,29 +49,36 @@ class VisionCore:
         print(f"[VISION CORE] Semantic screen analysis requested...")
         try:
             b64_image = self.capture_screen()
-            
-            # Use OpenAI Vision if available via llm_router
-            if llm_router.OPENAI_API_KEY:
-                messages = [
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "text", "text": prompt},
-                            {
-                                "type": "image_url",
-                                "image_url": {
-                                    "url": f"data:image/png;base64,{b64_image}"
-                                }
+
+            messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/png;base64,{b64_image}"
                             }
-                        ]
-                    }
-                ]
-                # Assuming llm_router.generate_completion handles the messages properly
-                res = llm_router.generate_completion(messages)
+                        }
+                    ]
+                }
+            ]
+            try:
+                res, _model = llm_router.generate_vision_completion(messages)
                 return {"status": "success", "analysis": res}
-            else:
-                return {"status": "error", "message": "OPENAI_API_KEY required for semantic vision."}
-                
+            except ValueError as ve:
+                # No vision model configured: fall back to OCR so the tool still
+                # returns something instead of a cryptic 400.
+                ocr = self.extract_text().strip()
+                if ocr:
+                    return {
+                        "status": "success",
+                        "analysis": f"(Vision model unavailable; showing OCR text instead. {ve})\n\nOCR:\n{ocr}",
+                    }
+                return {"status": "error", "message": str(ve)}
+
+
         except Exception as e:
             return {"status": "error", "message": f"Semantic analysis failed: {str(e)}"}
 
@@ -92,19 +99,20 @@ class VisionCore:
                 return {"status": "error", "message": "Failed to encode frame."}
             b64_image = base64.b64encode(jpg.tobytes()).decode('utf-8')
 
-            if llm_router.OPENAI_API_KEY:
-                messages = [
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "text", "text": prompt},
-                            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64_image}"}}
-                        ]
-                    }
-                ]
-                res = llm_router.generate_completion(messages)
+            messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64_image}"}}
+                    ]
+                }
+            ]
+            try:
+                res, _model = llm_router.generate_vision_completion(messages)
                 return {"status": "success", "analysis": res}
-            return {"status": "error", "message": "OPENAI_API_KEY required for semantic vision."}
+            except ValueError as ve:
+                return {"status": "error", "message": str(ve)}
         except Exception as e:
             return {"status": "error", "message": f"Webcam analysis failed: {str(e)}"}
 
