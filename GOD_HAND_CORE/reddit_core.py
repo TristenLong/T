@@ -1,6 +1,7 @@
 ﻿import os
 
 import praw
+import prawcore
 from dotenv import load_dotenv
 
 ROOT_ENV = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), '.env')
@@ -36,6 +37,15 @@ def scan_subreddit(sub_name, limit=3):
             posts.append(f"TITLE: {post.title}\nID: {post.id}\nSCORE: {post.score}\nCONTENT: {post.selftext[:500]}...")
         
         return "\n---\n".join(posts)
+    except prawcore.ResponseException as e:
+        if e.response is not None and e.response.status_code == 401:
+            return (
+                "ERROR: Reddit auth failed (401 Unauthorized). The REDDIT_CLIENT_ID / "
+                "REDDIT_CLIENT_SECRET in .env are rejected by Reddit's OAuth2 endpoint "
+                "(stale or revoked credentials). Fix: generate a new 'script' app at "
+                "https://www.reddit.com/prefs/apps and update .env, then restart the server."
+            )
+        return f"ERROR: Failed to scan r/{sub_name}. Reddit responded {e.response.status_code if e.response else 'n/a'}: {e}"
     except Exception as e:
         return f"ERROR: Failed to scan r/{sub_name}. {str(e)}"
 
