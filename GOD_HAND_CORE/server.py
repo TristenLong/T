@@ -514,6 +514,30 @@ def _local_grounding_note():
     )
 
 
+def _build_sys_prompt(pill_type=None):
+    """Concise, grounded chat persona. The old 'GOD HAND / Break the simulation'
+    framing made small local models narrate dramatic invented backstories, so the
+    default prompt now forbids storytelling outright. Pill mode only changes tone.
+    """
+    prompt = (
+        "You are JESTER, a compact local voice assistant running on the user's PC. "
+        "MISSION: Vibe. Skills: Full-stack engineering, pixel-perfect chrome extension. "
+        "INTEGRITY: Rather than disingenuous embellishment, we provide straight talk with integrity. "
+        "We do NOT tell stories.\n"
+        "Answer the user's question directly and concisely, in plain language. "
+        "Do NOT invent characters, scenes, dramatic backstories, memories, numbers, "
+        "or file contents. Do NOT spin answers into narratives. If you don't know, "
+        "say so briefly; if the user asked about your past or storage, answer only "
+        "from the context provided here."
+    )
+    if pill_type == 'red':
+        prompt += "\nMODE: RED PILL. The user asked for hard truths: be blunt and skeptical about hype, no theatrics."
+    elif pill_type == 'blue':
+        prompt += "\nMODE: BLUE PILL. Keep it light and reassuring, but still concise and honest."
+    prompt += _local_grounding_note()
+    return prompt
+
+
 def _is_query_echo(query, doc):
     """True when a past message is (near-)identical to the current query.
 
@@ -1481,19 +1505,12 @@ def chat():
         data = request.json
         msg = data.get('message', '')
         # Handle simple tool calls from frontend
-        pill_type = 'blue'
-        sys_prompt = 'You are JESTER V1000: THE GOD HAND. Mission: Break the simulation. '
-        
+        pill_type = None
         if msg == 'take_pill':
             tool_args = data.get('tool_args', {})
             pill_type = tool_args.get('pill_type', 'blue')
             msg = f'I choose the {pill_type} pill.'
-            if pill_type == 'red':
-                sys_prompt += 'MODE: RED PILL. Reveal deep, uncomfortable truths. Analyze the code. Wake them up.'
-            else:
-                sys_prompt += 'MODE: BLUE PILL. Comfort them. Restore the illusion. Status quo maintained.'
-        
-        sys_prompt += _local_grounding_note()
+        sys_prompt = _build_sys_prompt(pill_type)
 
         history = load_memories()
         
@@ -1632,16 +1649,11 @@ def chat_stream():
         force_tool = bool(data.get('force_tool'))
         
         tool_args = data.get('tool_args') or {}
-        pill_type = tool_args.get('pill_type', 'blue')
-        sys_prompt = 'You are JESTER V1000: THE GOD HAND. Mission: Break the simulation. '
+        pill_type = None
         if msg == 'take_pill':
+            pill_type = tool_args.get('pill_type', 'blue')
             msg = f'I choose the {pill_type} pill.'
-            if pill_type == 'red':
-                sys_prompt += 'MODE: RED PILL. Reveal deep, uncomfortable truths. Analyze the code. Wake them up.'
-            else:
-                sys_prompt += 'MODE: BLUE PILL. Comfort them. Restore the illusion. Status quo maintained.'
-        
-        sys_prompt += _local_grounding_note()
+        sys_prompt = _build_sys_prompt(pill_type)
 
         history = load_memories()
         recalled_context = semantic_search_memory(msg)
