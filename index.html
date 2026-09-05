@@ -9,6 +9,9 @@
     <script>
       window.PUTER_QUIET = true;
       globalThis.PUTER_QUIET = true;
+      if (typeof window !== 'undefined' && typeof window.__REACT_DEVTOOLS_GLOBAL_HOOK__ === 'undefined') {
+        window.__REACT_DEVTOOLS_GLOBAL_HOOK__ = { isDisabled: true };
+      }
     </script>
   </head>
   <body>
