@@ -15,7 +15,7 @@ def _git(*args):
             capture_output=True,
             text=True,
             cwd=BASE_DIR,
-            timeout=60,
+            timeout=180,
         )
         return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
     except Exception as e:
