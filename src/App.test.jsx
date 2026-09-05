@@ -39,6 +39,15 @@ test('renders all 5 separate bots and confirm comms action in chat interface', (
   const criticBtn = screen.getByRole('button', { name: /BRUTAL CRITIC/i });
   fireEvent.click(criticBtn);
   expect(screen.getByText(/DIRECT LINK: BRUTAL CRITIC/i)).toBeInTheDocument();
+
+  // Verify voice preview and specialist action buttons are present and clickable
+  const voiceBtn = screen.getByRole('button', { name: /VOICE PREVIEW/i });
+  expect(voiceBtn).toBeInTheDocument();
+  fireEvent.click(voiceBtn);
+
+  const auditBtn = screen.getByRole('button', { name: /3-LENS AUDIT/i });
+  expect(auditBtn).toBeInTheDocument();
+  fireEvent.click(auditBtn);
 });
 
 test('renders Sentry Watcher toggle, RAM purge button, and Swarm Execute Consensus button', () => {

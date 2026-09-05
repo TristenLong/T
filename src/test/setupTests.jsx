@@ -18,6 +18,7 @@ globalThis.speechSynthesis = {
   cancel: vi.fn(),
   pause: vi.fn(),
   resume: vi.fn(),
+  getVoices: vi.fn().mockReturnValue([]),
 };
 
 // Mock fetch API

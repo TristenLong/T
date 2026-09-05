@@ -7,7 +7,7 @@ import {
   Globe, Trash2, Send, Eye, Volume2, Lock, Search, Play, Brain, 
   Settings, Sparkles, Layers, Compass, Camera, Monitor, Code2, 
   Bot, Network, RefreshCw, BarChart2, Radio, Server, MessageSquare, 
-  Wrench, X, ChevronUp, ChevronDown, CheckCircle2, Flame, Users
+  Wrench, X, ChevronUp, ChevronDown, CheckCircle2, Flame, Users, Square
 } from 'lucide-react';
 import JesterBrain from './JesterBrain';
 import MatrixRain from './MatrixRain';
@@ -30,11 +30,86 @@ const theme = {
 
 // Swarm Fleet Personas matching GOD_HAND_CORE/server.py
 const DEFAULT_SWARM_BOTS = [
-  { id: 'jester', name: 'JESTER', role: 'Matrix Architect & Sovereign Core', color: '#00FF66', avatar: 'Zap', port: '5000' },
-  { id: 'claude', name: 'CLAUDE CODE', role: 'Strategic Architecture & Modular Engineer', color: '#B026FF', avatar: 'Terminal', port: 'CLI' },
-  { id: 'gemini', name: 'GEMINI SCOUT', role: '2M-Context Deep Explorer & Web Intelligence', color: '#00F0FF', avatar: 'Globe', port: '7860' },
-  { id: 'brutal_critic', name: 'BRUTAL CRITIC', role: '3-Lens Stress Tester & Code Auditor', color: '#FF0055', avatar: 'Shield', port: 'SUB' },
-  { id: 'codex', name: 'CODEX', role: 'Universal Protocol & System Standard Engineer', color: '#FFD700', avatar: 'Code2', port: 'STD' }
+  { 
+    id: 'jester', 
+    name: 'JESTER', 
+    role: 'Matrix Architect & Sovereign Core', 
+    color: '#00FF66', 
+    avatar: 'Zap', 
+    port: '5000',
+    voice_profile: {
+      pitch: 0.8,
+      rate: 1.1,
+      timbre_label: 'Deep Matrix Sovereign',
+      greeting: 'I am JESTER. Supreme matrix sovereign and God Hand coordinator. Frequencies locked and operational.'
+    },
+    capabilities: ['SYSTEM_ORCHESTRATION', 'WORKING_SET_PURGE', 'PROCESS_SUPERVISION', 'CONSENSUS_VERDICT'],
+    quick_actions: [{ id: 'fleet_sync', label: 'FLEET SYNC', desc: 'Purge working set memory and synchronize all 5 agent nodes.' }]
+  },
+  { 
+    id: 'claude', 
+    name: 'CLAUDE CODE', 
+    role: 'Strategic Architecture & Modular Engineer', 
+    color: '#B026FF', 
+    avatar: 'Terminal', 
+    port: 'CLI',
+    voice_profile: {
+      pitch: 1.0,
+      rate: 1.0,
+      timbre_label: 'Strategic Architectural Voice',
+      greeting: 'Claude Code online. Deep architectural modeling, modular engineering, and sub-agent workflows ready.'
+    },
+    capabilities: ['ARCHITECTURAL_BLUEPRINTS', 'MODULAR_SYSTEM_DESIGN', 'SUBAGENT_ORCHESTRATION'],
+    quick_actions: [{ id: 'generate_blueprint', label: 'BLUEPRINT SPEC', desc: 'Deconstruct objective into a modular, multi-phase technical blueprint.' }]
+  },
+  { 
+    id: 'gemini', 
+    name: 'GEMINI SCOUT', 
+    role: '2M-Context Deep Explorer & Web Intelligence', 
+    color: '#00F0FF', 
+    avatar: 'Globe', 
+    port: '7860',
+    voice_profile: {
+      pitch: 1.25,
+      rate: 1.15,
+      timbre_label: 'High-Speed Web Visionary',
+      greeting: 'Gemini Scout connected. 2,000,000-token context bus online. Deep research and real-time signals operational.'
+    },
+    capabilities: ['DEEP_WEB_RESEARCH', 'REALTIME_SIGNAL_SCOUT', '2M_CONTEXT_ANALYSIS'],
+    quick_actions: [{ id: 'deep_scout', label: 'DEEP SCOUT', desc: 'Execute high-speed intelligence gathering and extract core web signals.' }]
+  },
+  { 
+    id: 'brutal_critic', 
+    name: 'BRUTAL CRITIC', 
+    role: '3-Lens Stress Tester & Code Auditor', 
+    color: '#FF0055', 
+    avatar: 'Shield', 
+    port: 'SUB',
+    voice_profile: {
+      pitch: 0.65,
+      rate: 1.3,
+      timbre_label: 'Grit Security Auditor',
+      greeting: 'Brutal Critic awake. Sycophancy filters disabled. 3-lens evaluation matrix ready to expose every vulnerability.'
+    },
+    capabilities: ['3_LENS_STRESS_AUDIT', 'ANTI_GASLIGHT_REVIEW', 'SECURITY_VULNERABILITY_PROBE'],
+    quick_actions: [{ id: 'stress_audit', label: '3-LENS AUDIT', desc: 'Execute harsh 3-lens evaluation on structural soundness, retention, and security.' }]
+  },
+  { 
+    id: 'codex', 
+    name: 'CODEX', 
+    role: 'Universal Protocol & System Standard Engineer', 
+    color: '#FFD700', 
+    avatar: 'Code2', 
+    port: 'STD',
+    voice_profile: {
+      pitch: 0.9,
+      rate: 0.95,
+      timbre_label: 'Methodical Cyber Synth',
+      greeting: 'Codex initialized. Universal AGENTS.md standard active. Syntax validation and deterministic testing standing by.'
+    },
+    capabilities: ['DETERMINISTIC_TEST_SYNTHESIS', 'SYNTAX_COMPILATION_CHECK', 'ZERO_BLOAT_EXECUTION'],
+    quick_actions: [{ id: 'generate_tests', label: 'SYNTHESIZE TESTS', desc: 'Draft deterministic unit and integration test assertions with zero bloat.' }]
+  }
 ];
 
 const renderBotIcon = (avatarName, color = '#FFF', size = 14) => {
@@ -258,8 +333,15 @@ function App() {
     // Legacy Electron IPC dynamic click-through hack removed.
   }, []);
 
-  const speak = (txt, botId = 'jester') => {
-    if (!tts) return;
+  const autoReadRef = useRef(false);
+  const [isAutoReading, setIsAutoReading] = useState(false);
+  const [activeReadingIndex, setActiveReadingIndex] = useState(-1);
+
+  const speak = (txt, botId = 'jester', onEndCallback = null) => {
+    if (!tts) {
+      if (onEndCallback) onEndCallback();
+      return;
+    }
     try {
       tts.cancel();
       const ut = new SpeechSynthesisUtterance(txt);
@@ -275,7 +357,7 @@ function App() {
       ut.pitch = profile.pitch;
       ut.rate = profile.rate;
 
-      if (typeof window !== 'undefined' && window.speechSynthesis) {
+      if (typeof window !== 'undefined' && window.speechSynthesis && typeof window.speechSynthesis.getVoices === 'function') {
         const voices = window.speechSynthesis.getVoices();
         if (voices && voices.length > 0) {
           if (botId === 'brutal_critic') {
@@ -296,10 +378,89 @@ function App() {
       ut.onend = () => {
         setIsSpeaking(false);
         setSpeakingBot(null);
+        if (onEndCallback) onEndCallback();
+      };
+      ut.onerror = () => {
+        setIsSpeaking(false);
+        setSpeakingBot(null);
+        if (onEndCallback) onEndCallback();
       };
       tts.speak(ut);
     } catch (e) {
       console.warn("TTS Error", e);
+      if (onEndCallback) onEndCallback();
+    }
+  };
+
+  const previewVoice = (botId) => {
+    const target = swarmBots.find(b => b.id === botId) || { name: botId.toUpperCase(), voice_profile: {} };
+    const greeting = target.voice_profile?.greeting || `I am ${target.name}. All systems operational.`;
+    observe('VOICE', `Auditioning voice profile for ${target.name}`);
+    speak(greeting, botId);
+  };
+
+  const stopAutoRead = () => {
+    autoReadRef.current = false;
+    setIsAutoReading(false);
+    setActiveReadingIndex(-1);
+    if (tts) tts.cancel();
+    setIsSpeaking(false);
+    setSpeakingBot(null);
+  };
+
+  const startAutoReadSwarm = () => {
+    if (!swarmTurns || swarmTurns.length === 0) return;
+    autoReadRef.current = true;
+    setIsAutoReading(true);
+    
+    const readStep = (idx) => {
+      if (!autoReadRef.current || idx >= swarmTurns.length) {
+        stopAutoRead();
+        return;
+      }
+      setActiveReadingIndex(idx);
+      const turn = swarmTurns[idx];
+      const botId = turn.bot_id || 'jester';
+      setActiveBot(botId);
+      speak(`${turn.name}: ${turn.content}`, botId, () => {
+        if (autoReadRef.current) {
+          setTimeout(() => readStep(idx + 1), 600);
+        }
+      });
+    };
+    
+    readStep(0);
+  };
+
+  const executeAgentAction = async (botId, actionId, label) => {
+    setIsSwarmDeliberating(true);
+    setStatus('EXECUTING_ACTION...');
+    const targetBot = swarmBots.find(b => b.id === botId) || { name: botId.toUpperCase(), color: theme.cyan };
+    setResponse(`[DISPATCHING ${label.toUpperCase()} TO ${targetBot.name}...]\nExecuting autonomous capability...`);
+    observe('ACTION', `Dispatched ${label} to ${targetBot.name}`);
+    
+    try {
+      const res = await fetch('/api/swarm/agent_action', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ bot_id: botId, action: actionId, target: input || '' })
+      });
+      const data = await res.json();
+      if (data && data.status === 'SUCCESS') {
+        const report = data.report || 'Action complete.';
+        setResponse(`[${data.bot_name} // ${label.toUpperCase()}]\n\n${report}`);
+        speak(`${label} executed successfully by ${data.bot_name}, sir.`, botId);
+        remember('model', `[${data.bot_name} ${label}] ${report}`);
+        observe('ACTION', `${data.bot_name} completed ${label}`);
+      } else {
+        throw new Error(data?.error || 'Action execution failed');
+      }
+    } catch (err) {
+      setResponse(`[ACTION_ERROR: ${targetBot.name}] ${err.message}`);
+      observe('ERROR', `Action ${label} on ${targetBot.name} failed: ${err.message}`);
+    } finally {
+      setIsSwarmDeliberating(false);
+      setStatus('THE_ONE_ONLINE');
     }
   };
 
@@ -1566,99 +1727,183 @@ function App() {
                 })}
               </div>
 
-              {/* Action Controls: Handshake Ping, Debate Topic, and Reset */}
-              <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-                <button
-                  onClick={confirmComms}
-                  disabled={isSwarmDeliberating}
-                  style={{
-                    background: commStatus?.state === 'VERIFIED'
-                      ? 'rgba(0,255,102,0.2)'
-                      : 'linear-gradient(135deg, rgba(0,240,255,0.2), rgba(0,255,102,0.2))',
-                    border: `1px solid ${commStatus?.state === 'VERIFIED' ? theme.main : theme.cyan}`,
-                    color: commStatus?.state === 'VERIFIED' ? theme.main : theme.cyan,
-                    padding: '6px 14px',
-                    borderRadius: '20px',
-                    fontSize: '0.72rem',
-                    fontWeight: 'bold',
-                    cursor: isSwarmDeliberating ? 'default' : 'pointer',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '6px',
-                    boxShadow: commStatus?.state === 'VERIFIED' ? `0 0 15px ${theme.main}44` : `0 0 12px ${theme.cyan}44`,
-                    opacity: isSwarmDeliberating ? 0.6 : 1
-                  }}
-                  title="Broadcast handshake to all 5 bots and verify communication"
-                >
-                  <CheckCircle2 size={14} color={commStatus?.state === 'VERIFIED' ? theme.main : theme.cyan} />
-                  <span>{commStatus?.state === 'VERIFIED' ? 'COMMS CONFIRMED (5/5)' : '⚡ CONFIRM COMMS'}</span>
-                </button>
+              {/* Action Controls */}
+              <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
+                {activeBot === 'swarm' ? (
+                  <>
+                    <button
+                      onClick={confirmComms}
+                      disabled={isSwarmDeliberating}
+                      style={{
+                        background: commStatus?.state === 'VERIFIED'
+                          ? 'rgba(0,255,102,0.2)'
+                          : 'linear-gradient(135deg, rgba(0,240,255,0.2), rgba(0,255,102,0.2))',
+                        border: `1px solid ${commStatus?.state === 'VERIFIED' ? theme.main : theme.cyan}`,
+                        color: commStatus?.state === 'VERIFIED' ? theme.main : theme.cyan,
+                        padding: '6px 14px',
+                        borderRadius: '20px',
+                        fontSize: '0.72rem',
+                        fontWeight: 'bold',
+                        cursor: isSwarmDeliberating ? 'default' : 'pointer',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '6px',
+                        boxShadow: commStatus?.state === 'VERIFIED' ? `0 0 15px ${theme.main}44` : `0 0 12px ${theme.cyan}44`,
+                        opacity: isSwarmDeliberating ? 0.6 : 1
+                      }}
+                      title="Broadcast handshake to all 5 bots and verify communication"
+                    >
+                      <CheckCircle2 size={14} color={commStatus?.state === 'VERIFIED' ? theme.main : theme.cyan} />
+                      <span>{commStatus?.state === 'VERIFIED' ? 'COMMS CONFIRMED (5/5)' : '⚡ CONFIRM COMMS'}</span>
+                    </button>
 
-                <button
-                  onClick={() => runRoundtable(input || 'Review system architecture and verify all 5 agent channels')}
-                  disabled={isSwarmDeliberating}
-                  style={{
-                    background: 'rgba(176,38,255,0.15)',
-                    border: `1px solid ${theme.purple}`,
-                    color: theme.purple,
-                    padding: '6px 12px',
-                    borderRadius: '20px',
-                    fontSize: '0.72rem',
-                    fontWeight: 'bold',
-                    cursor: isSwarmDeliberating ? 'default' : 'pointer',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '5px',
-                    opacity: isSwarmDeliberating ? 0.6 : 1
-                  }}
-                  title="Trigger sequential multi-bot debate on the current objective"
-                >
-                  <Flame size={13} color={theme.purple} />
-                  <span>DEBATE</span>
-                </button>
+                    <button
+                      onClick={() => runRoundtable(input || 'Review system architecture and verify all 5 agent channels')}
+                      disabled={isSwarmDeliberating}
+                      style={{
+                        background: 'rgba(176,38,255,0.15)',
+                        border: `1px solid ${theme.purple}`,
+                        color: theme.purple,
+                        padding: '6px 12px',
+                        borderRadius: '20px',
+                        fontSize: '0.72rem',
+                        fontWeight: 'bold',
+                        cursor: isSwarmDeliberating ? 'default' : 'pointer',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '5px',
+                        opacity: isSwarmDeliberating ? 0.6 : 1
+                      }}
+                      title="Trigger sequential multi-bot debate on the current objective"
+                    >
+                      <Flame size={13} color={theme.purple} />
+                      <span>DEBATE</span>
+                    </button>
 
-                <button
-                  onClick={executeConsensusCode}
-                  disabled={executingConsensus || isSwarmDeliberating}
-                  style={{
-                    background: 'rgba(255,215,0,0.15)',
-                    border: `1px solid ${theme.amber}`,
-                    color: theme.amber,
-                    padding: '6px 13px',
-                    borderRadius: '20px',
-                    fontSize: '0.72rem',
-                    fontWeight: 'bold',
-                    cursor: executingConsensus || isSwarmDeliberating ? 'default' : 'pointer',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '5px',
-                    opacity: executingConsensus || isSwarmDeliberating ? 0.6 : 1,
-                    boxShadow: `0 0 10px ${theme.amber}33`
-                  }}
-                  title="Autonomously write and verify consensus code from the Swarm debate"
-                >
-                  <Code2 size={13} color={theme.amber} />
-                  <span>{executingConsensus ? 'EXECUTING...' : '⚡ EXECUTE CONSENSUS'}</span>
-                </button>
+                    <button
+                      onClick={executeConsensusCode}
+                      disabled={executingConsensus || isSwarmDeliberating}
+                      style={{
+                        background: 'rgba(255,215,0,0.15)',
+                        border: `1px solid ${theme.amber}`,
+                        color: theme.amber,
+                        padding: '6px 13px',
+                        borderRadius: '20px',
+                        fontSize: '0.72rem',
+                        fontWeight: 'bold',
+                        cursor: executingConsensus || isSwarmDeliberating ? 'default' : 'pointer',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '5px',
+                        opacity: executingConsensus || isSwarmDeliberating ? 0.6 : 1,
+                        boxShadow: `0 0 10px ${theme.amber}33`
+                      }}
+                      title="Autonomously write and verify consensus code from the Swarm debate"
+                    >
+                      <Code2 size={13} color={theme.amber} />
+                      <span>{executingConsensus ? 'EXECUTING...' : '⚡ EXECUTE CONSENSUS'}</span>
+                    </button>
 
-                {swarmTurns.length > 0 && (
-                  <button
-                    onClick={() => { setSwarmTurns([]); setResponse(''); }}
-                    style={{
-                      background: 'none',
-                      border: `1px solid ${theme.sec}`,
-                      color: theme.sec,
-                      padding: '6px 8px',
-                      borderRadius: '20px',
-                      fontSize: '0.7rem',
-                      cursor: 'pointer',
-                      display: 'flex',
-                      alignItems: 'center'
-                    }}
-                    title="Clear Swarm Dialogue"
-                  >
-                    <Trash2 size={13} />
-                  </button>
+                    {swarmTurns.length > 0 && (
+                      <button
+                        onClick={isAutoReading ? stopAutoRead : startAutoReadSwarm}
+                        style={{
+                          background: isAutoReading ? 'rgba(255,0,85,0.25)' : 'rgba(0,240,255,0.15)',
+                          border: `1px solid ${isAutoReading ? theme.err : theme.cyan}`,
+                          color: isAutoReading ? theme.err : theme.cyan,
+                          padding: '6px 13px',
+                          borderRadius: '20px',
+                          fontSize: '0.72rem',
+                          fontWeight: 'bold',
+                          cursor: 'pointer',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '5px',
+                          boxShadow: isAutoReading ? `0 0 12px ${theme.err}66` : 'none'
+                        }}
+                        title={isAutoReading ? "Stop Auto-Reading" : "Auto-read the entire debate using each bot's dedicated voice"}
+                      >
+                        {isAutoReading ? <Square size={13} color={theme.err} /> : <Volume2 size={13} color={theme.cyan} />}
+                        <span>{isAutoReading ? 'STOP AUDIO' : '🔊 AUTO-READ DEBATE'}</span>
+                      </button>
+                    )}
+
+                    {swarmTurns.length > 0 && (
+                      <button
+                        onClick={() => { setSwarmTurns([]); setResponse(''); }}
+                        style={{
+                          background: 'none',
+                          border: `1px solid ${theme.sec}`,
+                          color: theme.sec,
+                          padding: '6px 8px',
+                          borderRadius: '20px',
+                          fontSize: '0.7rem',
+                          cursor: 'pointer',
+                          display: 'flex',
+                          alignItems: 'center'
+                        }}
+                        title="Clear Swarm Dialogue"
+                      >
+                        <Trash2 size={13} />
+                      </button>
+                    )}
+                  </>
+                ) : (
+                  // Individual Specialist Bot Action Bar
+                  (() => {
+                    const curBot = swarmBots.find(b => b.id === activeBot) || { name: activeBot.toUpperCase(), color: theme.cyan };
+                    return (
+                      <div style={{ display: 'flex', gap: '6px', alignItems: 'center', flexWrap: 'wrap' }}>
+                        <button
+                          onClick={() => previewVoice(activeBot)}
+                          style={{
+                            background: 'rgba(0,240,255,0.15)',
+                            border: `1px solid ${curBot.color || theme.cyan}`,
+                            color: curBot.color || theme.cyan,
+                            padding: '6px 12px',
+                            borderRadius: '20px',
+                            fontSize: '0.72rem',
+                            fontWeight: 'bold',
+                            cursor: 'pointer',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '5px'
+                          }}
+                          title={`Audition ${curBot.name}'s dedicated voice profile`}
+                        >
+                          <Volume2 size={13} color={curBot.color || theme.cyan} />
+                          <span>VOICE PREVIEW</span>
+                        </button>
+
+                        {(curBot.quick_actions || []).map(act => (
+                          <button
+                            key={act.id}
+                            onClick={() => executeAgentAction(activeBot, act.id, act.label)}
+                            disabled={isSwarmDeliberating}
+                            style={{
+                              background: `${curBot.color}22`,
+                              border: `1px solid ${curBot.color}`,
+                              color: curBot.color,
+                              padding: '6px 13px',
+                              borderRadius: '20px',
+                              fontSize: '0.72rem',
+                              fontWeight: 'bold',
+                              cursor: isSwarmDeliberating ? 'default' : 'pointer',
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: '5px',
+                              opacity: isSwarmDeliberating ? 0.6 : 1,
+                              boxShadow: `0 0 10px ${curBot.color}33`
+                            }}
+                            title={act.desc}
+                          >
+                            <Zap size={13} color={curBot.color} />
+                            <span>⚡ {act.label}</span>
+                          </button>
+                        ))}
+                      </div>
+                    );
+                  })()
                 )}
               </div>
             </div>
@@ -1709,11 +1954,16 @@ function App() {
                       (() => {
                         const b = swarmBots.find(x => x.id === activeBot) || { name: activeBot.toUpperCase(), color: theme.cyan, role: 'Agent' };
                         return (
-                          <>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
                             {renderBotIcon(b.avatar, b.color, 14)}
                             <span style={{ color: b.color, fontWeight: 'bold' }}>DIRECT LINK: {b.name}</span>
                             <span style={{ color: '#888' }}>// {b.role}</span>
-                          </>
+                            {b.voice_profile?.timbre_label && (
+                              <span style={{ fontSize: '0.62rem', padding: '1px 6px', borderRadius: '10px', background: `${b.color}22`, color: b.color, border: `1px solid ${b.color}44` }}>
+                                🎙️ {b.voice_profile.timbre_label}
+                              </span>
+                            )}
+                          </div>
                         );
                       })()
                     )}

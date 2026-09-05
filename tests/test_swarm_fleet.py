@@ -35,6 +35,17 @@ def test_swarm_bots_endpoint(auth_headers):
     for expected in ['jester', 'claude', 'gemini', 'brutal_critic', 'codex']:
         assert expected in bot_ids
 
+    # Validate voice profiles and capability enrichment
+    for bot in data['bots']:
+        assert 'voice_profile' in bot
+        assert 'pitch' in bot['voice_profile']
+        assert 'rate' in bot['voice_profile']
+        assert 'timbre_label' in bot['voice_profile']
+        assert 'greeting' in bot['voice_profile']
+        assert 'capabilities' in bot
+        assert len(bot['capabilities']) >= 2
+        assert 'quick_actions' in bot
+
 def test_ram_optimizer_endpoint(auth_headers):
     res = requests.get(f'{BASE_URL}/api/sys/optimize_ram', headers=auth_headers, timeout=10)
     assert res.status_code == 200
@@ -60,8 +71,25 @@ def test_swarm_agent_chat(auth_headers):
     assert 'reply' in data
     assert len(data['reply']) > 0
 
+def test_swarm_agent_action(auth_headers):
+    # Test specialized action execution for Claude architecture blueprint
+    payload = {
+        'bot_id': 'claude',
+        'action': 'generate_blueprint',
+        'params': {'feature': 'Quantum Swarm Intercom'}
+    }
+    res = requests.post(f'{BASE_URL}/api/swarm/agent_action', headers=auth_headers, json=payload, timeout=20)
+    assert res.status_code == 200
+    data = res.json()
+    assert data.get('status') == 'SUCCESS'
+    assert 'report' in data
+    assert len(data['report']) > 0
+    assert 'bot_id' in data and data['bot_id'] == 'claude'
+
 def test_security_unauthorized_rejection():
     # Verify that requests without token to protected endpoint are gated appropriately
     res = requests.post(f'{BASE_URL}/api/swarm/agent_chat', json={'bot_id': 'codex', 'message': 'test'}, timeout=5)
     assert res.status_code in [401, 403]
+    action_res = requests.post(f'{BASE_URL}/api/swarm/agent_action', json={'bot_id': 'claude', 'action': 'generate_blueprint'}, timeout=5)
+    assert action_res.status_code in [401, 403]
 
