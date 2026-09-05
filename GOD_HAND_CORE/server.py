@@ -1130,7 +1130,7 @@ def _agent_events(messages, sys_prompt, max_iters=3):
         f"with fixed arguments once, then answer). "
         f"Available tools: {tool_names}."
     )
-    msgs[0] = {'role': 'system', 'content': str(msgs[0]['content']) + caller_note}
+    msgs[0] = {'role': 'system', 'content': msgs[0]['content'] + caller_note}
 
     for _ in range(int(max_iters)):
         # MS agent-framework context compaction: compress the middle turns into
@@ -1161,7 +1161,7 @@ def _agent_events(messages, sys_prompt, max_iters=3):
             if sname is not None and not calls:
                 yield {'tool': {'name': sname, 'status': 'RUN'}}
                 outs = _yield_salvaged_call(sname, sargs, msgs)
-                out = str(outs[0]) if outs else ''
+                out = outs[0] if outs else ''
                 yield {'tool': {'name': sname, 'status': 'DONE', 'info': out[:400]}}
                 msgs.append({
                     'role': 'assistant',
@@ -1681,7 +1681,7 @@ def chat_stream():
         # model either hallucinates "it now works" or writes its tool call as
         # JSON prose that never executes. force_tool from the frontend already
         # covers most action words; mirror that intent server-side too.
-        run_tools = bool(force_tool) or requires_coding
+        run_tools = force_tool or requires_coding
         fallback_payload = history + [{'role': 'user', 'parts': [{'text': msg}]}]
         # Probe once here rather than inside the generator: by the time the
         # generator runs, the response headers are already sent and a 500 is no
@@ -1706,12 +1706,16 @@ def chat_stream():
                 logger.info('STREAM ROUTING: run_tools -> AGENT LOOP (TOOLS ENABLED)')
                 try:
                     for ev in _agent_events(fallback_payload, sys_prompt):
-                        if 'text' in ev:
-                            full_reply += ev['text']
-                            yield f"data: {json.dumps({'chunk': ev['text'], 'model': ev['model']})}\n\n"
+                        if not isinstance(ev, dict):
+                            continue
+                        chunk_text = ev.get('text')
+                        if chunk_text is not None and isinstance(chunk_text, str):
+                            full_reply += chunk_text
+                            yield f"data: {json.dumps({'chunk': chunk_text, 'model': str(ev.get('model', 'AI'))})}\n\n"
                         elif 'tool' in ev:
-                            t = ev['tool']
-                            yield f"data: {json.dumps({'type': 'tool', 'tool': t['name'], 'status': t['status'], 'info': t.get('info', '')})}\n\n"
+                            t = ev.get('tool')
+                            if isinstance(t, dict):
+                                yield f"data: {json.dumps({'type': 'tool', 'tool': str(t.get('name', '')), 'status': str(t.get('status', '')), 'info': str(t.get('info', ''))})}\n\n"
                     stream_success = True
                 except Exception as e:
                     logger.error(f'AGENT STREAM FAILED ({e}).')
@@ -1727,12 +1731,16 @@ def chat_stream():
                     logger.warning(f'PLAIN STREAM FAILED ({e}), trying agentic fallback.')
                     try:
                         for ev in _agent_events(fallback_payload, sys_prompt):
-                            if 'text' in ev:
-                                full_reply += ev['text']
-                                yield f"data: {json.dumps({'chunk': ev['text'], 'model': ev['model']})}\n\n"
+                            if not isinstance(ev, dict):
+                                continue
+                            chunk_text = ev.get('text')
+                            if chunk_text is not None and isinstance(chunk_text, str):
+                                full_reply += chunk_text
+                                yield f"data: {json.dumps({'chunk': chunk_text, 'model': str(ev.get('model', 'AI'))})}\n\n"
                             elif 'tool' in ev:
-                                t = ev['tool']
-                                yield f"data: {json.dumps({'type': 'tool', 'tool': t['name'], 'status': t['status'], 'info': t.get('info', '')})}\n\n"
+                                t = ev.get('tool')
+                                if isinstance(t, dict):
+                                    yield f"data: {json.dumps({'type': 'tool', 'tool': str(t.get('name', '')), 'status': str(t.get('status', '')), 'info': str(t.get('info', ''))})}\n\n"
                         stream_success = True
                     except Exception as f:
                         logger.error(f'AGENTIC FALLBACK FAILED ({f}).')

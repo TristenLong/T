@@ -46,8 +46,8 @@
     background-size: 40px 40px;
     z-index: -1;
     pointer-events: none;
-    mask-image: radial-gradient(circle at center, black 40%, transparent 100%);
     -webkit-mask-image: radial-gradient(circle at center, black 40%, transparent 100%);
+    mask-image: radial-gradient(circle at center, black 40%, transparent 100%);
   }
 
   .wrap {
@@ -105,6 +105,7 @@
     padding: 8px 16px;
     border: 1px solid var(--panel-border);
     border-radius: 4px;
+    -webkit-backdrop-filter: blur(5px);
     backdrop-filter: blur(5px);
   }
 
@@ -152,6 +153,7 @@
     border-radius: 8px;
     padding: 24px;
     position: relative;
+    -webkit-backdrop-filter: blur(10px);
     backdrop-filter: blur(10px);
     box-shadow: inset 0 0 20px var(--panel-glow), 0 4px 15px rgba(0,0,0,0.5);
     transition: transform 0.2s, box-shadow 0.2s;
@@ -378,10 +380,10 @@
       <div class="subtitle">QUANTUM ENTROPY // MACRO-STATE // JESTER CORE TELEMETRY</div>
       <nav class="hq-nav">
         <span class="hq-title">HQ COMM:</span>
-        <a href="http://localhost:5173" target="_blank" class="hq-link live-pulse" title="Main React matrix HUD">HUD (5173)</a>
-        <a href="http://127.0.0.1:5000/api/pulse" target="_blank" class="hq-link" title="Flask Backend API">API CORE (5000)</a>
-        <a href="http://localhost:7860" target="_blank" class="hq-link" title="Pipecat WebRTC Voice Engine">VOICE (7860)</a>
-        <a href="https://github.com/TristenLong/T" target="_blank" class="hq-link" title="Official Project Repository">GITHUB REPO</a>
+        <a href="http://localhost:5173" target="_blank" rel="noopener noreferrer" class="hq-link live-pulse" title="Main React matrix HUD">HUD (5173)</a>
+        <a href="http://127.0.0.1:5000/api/pulse" target="_blank" rel="noopener noreferrer" class="hq-link" title="Flask Backend API">API CORE (5000)</a>
+        <a href="http://localhost:7860" target="_blank" rel="noopener noreferrer" class="hq-link" title="Pipecat WebRTC Voice Engine">VOICE (7860)</a>
+        <a href="https://github.com/TristenLong/T" target="_blank" rel="noopener noreferrer" class="hq-link" title="Official Project Repository">GITHUB REPO</a>
       </nav>
     </div>
     <div class="status-container">

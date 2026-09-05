@@ -51,6 +51,8 @@ const renderBotIcon = (avatarName, color = '#FFF', size = 14) => {
 // Puter frontend model (OpenRouter models via puter.js, no API key needed).
 const PUTER_MODEL = 'z-ai/glm-5.3';
 
+const IDLE_STATUSES = ['THE_ONE_ONLINE', 'LOCAL_CORE_ACTIVE', 'PUTER_LINKED', 'FALLBACK_RESPONSE'];
+
 function App() {
   const [bootSequence, setBootSequence] = useState(true);
   const [isListening, setIsListening] = useState(false);
@@ -192,7 +194,6 @@ function App() {
     }
   }, [response]);
 
-  const idleStatuses = ['THE_ONE_ONLINE', 'LOCAL_CORE_ACTIVE', 'PUTER_LINKED', 'FALLBACK_RESPONSE'];
   useEffect(() => {
     // Reclaim keyboard focus on the command input whenever the app is back to
     // idle so a stuck streaming turn or a stale HMR frame cannot leave the UI
@@ -200,7 +201,7 @@ function App() {
     // field (e.g. the Observer channel).
     const active = document.activeElement;
     const inInput = active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA');
-    if (!inInput && inputRef.current && idleStatuses.includes(status)) {
+    if (!inInput && inputRef.current && IDLE_STATUSES.includes(status)) {
       requestAnimationFrame(() => inputRef.current && inputRef.current.focus({ preventScroll: true }));
     }
   }, [status, bootSequence]);
@@ -211,7 +212,6 @@ function App() {
     if (typeof puter !== 'undefined' && puter && puter.authToken) {
       armBackendWithPuter();
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -815,6 +815,7 @@ function App() {
       desc: 'Re-trigger self-awareness hologram test', 
       customAction: () => setBootSequence(true) 
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   ], []);
 
   const categories = ['ALL', 'PROTOCOL', 'SWARM', 'VISION', 'INTELLIGENCE', 'QUANTUM', 'SYSTEM'];
