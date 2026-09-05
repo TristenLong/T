@@ -596,13 +596,13 @@ function App() {
       cmd: 'conduct deep research on quantum entropy algorithms' 
     },
     { 
-      id: 'reddit_intel', 
-      label: 'REDDIT INTEL', 
+      id: 'news_feed', 
+      label: 'NEWS / RSS', 
       category: 'INTELLIGENCE',
       hue: theme.orange, 
       icon: <Radio size={16}/>, 
-      desc: 'Subreddit scanner & sentiment extraction', 
-      cmd: 'check reddit for latest AI news on r/singularity' 
+      desc: 'Fetch latest posts from a subreddit or any RSS/Atom feed (no credentials needed)', 
+      cmd: 'fetch news from r/singularity' 
     },
     { 
       id: 'knowledge_graph', 

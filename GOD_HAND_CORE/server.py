@@ -1096,7 +1096,7 @@ def _agent_events(messages, sys_prompt, max_iters=3):
         f"'find X'/'what apps'/'list installed apps'/'installed software' -> list_apps (pass the app name as filter if given); "
         f"'search ...'/'look up' -> search_web or conduct_deep_research; "
         f"'diagnostics'/'run system status'/'health check'/'test tools'/'fix my setup' -> diagnostics_report; "
-        f"'reddit X'/'subreddit X' -> check_reddit; "
+        f"'r/X'/'subreddit X'/'news from X'/'fetch the feed for X' -> fetch_rss; "
          f"'todo X'/'add task'/'track this' -> todo_add; 'list todos'/'what tasks'/'to-do' -> todo_list; 'mark todo done' -> todo_mark; "
         f"'code X'/'build X'/'write X X'/'create X X'/'fix the bug in <path>'/'repair <path>'/'add feature to <path>' -> dispatch_coder_swarm (pass the full file path as `path` when the user names one, `execute=True` only if asked to run it); "
         f"Otherwise do NOT call a tool -- just answer the user's message directly. "
@@ -1374,7 +1374,7 @@ def execute_tool():
             'vision_ocr': lambda: server_tools.ocr_screen(cmd),
             'webcam_optics': lambda: server_tools.capture_webcam_analysis(cmd or 'Describe what the webcam sees in detail.'),
             'deep_research': lambda: server_tools.conduct_deep_research(cmd),
-            'reddit_intel': lambda: server_tools.check_reddit(subreddit_from(cmd) or 'singularity'),
+            'news_feed': lambda: server_tools.fetch_rss(subreddit_from(cmd) or 'r/singularity'),
             'knowledge_graph': lambda: server_tools.query_knowledge_graph(cmd),
             'offline_brain': lambda: server_tools.switch_to_offline(cmd or 'status'),
             'sandbox_execute': lambda: server_tools.execute_python_sandbox(cmd),

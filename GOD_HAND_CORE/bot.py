@@ -38,8 +38,8 @@ import mcp_client_core
 import mutation_core
 import observer_core
 import offline_brain
-import reddit_core
 import research_core
+import rss_core
 import safeguards
 import strategy_core
 import synapse_core
@@ -361,12 +361,9 @@ async def run_diagnostics(f,t,a,l,c,r):
         await r({'error': str(e)})
 
 async def check_reddit(f,t,a,l,c,r):
-    sub = a.get('subreddit')
-    if not sub:
-        await r({'error': 'SUBREDDIT_MISSING'})
-    else:
-        data = reddit_core.scan_subreddit(sub)
-        await r({'reddit_data': data})
+    sub = a.get('subreddit') or (c or 'r/singularity')
+    data = rss_core.fetch_rss(sub)
+    await r({'reddit_data': data})
 
 async def browse_url(f,t,a,l,c,r):
     try:

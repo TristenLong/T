@@ -20,8 +20,8 @@ try:
     import computer_use
     import memory_core
     import offline_brain
-    import reddit_core
     import research_core
+    import rss_core
     import system_core
     import vision_core
     from sandbox_core import sandbox_core
@@ -61,10 +61,10 @@ def conduct_deep_research(query: str) -> str:
     except Exception as e:
         return f"Error: {e}"
 
-def check_reddit(subreddit: str) -> str:
-    """Subreddit scanner & sentiment extraction."""
+def fetch_rss(query: str, limit: int = 5) -> str:
+    """Fetch the latest posts from a subreddit ('r/singularity') or any RSS/Atom feed URL. No API credentials required."""
     try:
-        return reddit_core.scan_subreddit(subreddit)
+        return rss_core.fetch_rss(query, limit)
     except Exception as e:
         return f"Error: {e}"
 
@@ -405,7 +405,7 @@ TERMINAL_TOOLS = frozenset({
 # (keystrokes, mouse, screens, sandbox, coder subagents) is off-limits to the
 # planner: the plan runs with the same safety posture as the tool loop.
 _PLAN_EXEC_WHITELIST = frozenset({
-    'open_app_or_url', 'search_web', 'check_reddit', 'list_apps',
+    'open_app_or_url', 'search_web', 'fetch_rss', 'list_apps',
     'query_knowledge_graph', 'diagnostics_report', 'list_mcp_servers',
     'conduct_deep_research', 'todo_add', 'todo_list', 'todo_mark',
 })
@@ -498,7 +498,7 @@ AVAILABLE_TOOLS = [
     dispatch_coder_swarm,
     dispatch_browser_swarm,
     conduct_deep_research,
-    check_reddit,
+    fetch_rss,
     optimize_system,
     switch_to_offline,
     system_control,
