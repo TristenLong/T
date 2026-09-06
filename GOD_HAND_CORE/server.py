@@ -2251,16 +2251,78 @@ ACTIVE_SWARM_MODELS = [
     'gemini-flash-latest'
 ]
 
-def _swarm_generate_turn(prompt, sys_prompt, fallback_text, include_memory=True):
-    context_prefix = ""
+# --------------------------------------------------------------------------
+# Swarm grounding: a short block of VERIFIED live system facts injected into
+# every bot turn. Without it the bots confabulated files/services (Redis
+# daemons, ports, fleet states) that never existed and echoed each other's
+# roleplay. Everything in the block is measured/queried seconds before use.
+# --------------------------------------------------------------------------
+_SWARM_REALITY_CACHE = {'t': 0.0, 'block': ''}
+
+
+def _swarm_reality_block():
+    """Return a short, cached, verified facts string for grounding bot turns."""
+    import subprocess as sp
+
+    now = time.time()
+    if now - _SWARM_REALITY_CACHE.get('t', 0.0) < 5.0 and _SWARM_REALITY_CACHE.get('block'):
+        return _SWARM_REALITY_CACHE['block']
+    lines = []
+    try:
+        vm = psutil.virtual_memory()
+        cpu = psutil.cpu_percent(interval=None)
+        lines.append(f"- Memory: {vm.percent}% used, {round(vm.available / (1024 * 1024), 1)} MB free. CPU: {cpu}%. Host: {os.name}.")
+    except Exception:
+        pass
+    try:
+        root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+        sha = sp.run(['git', 'rev-parse', '--short', 'HEAD'], cwd=root, capture_output=True, text=True, timeout=3).stdout.strip()
+        branch = sp.run(['git', 'branch', '--show-current'], cwd=root, capture_output=True, text=True, timeout=3).stdout.strip()
+        dirty = bool(sp.run(['git', 'status', '--porcelain'], cwd=root, capture_output=True, text=True, timeout=3).stdout.strip())
+        lines.append(f"- Git: {branch or '?'} @ {sha or '?'} ({'dirty' if dirty else 'clean'}).")
+    except Exception:
+        pass
+    try:
+        llm_state = f"Ollama={'UP' if llm_router_ollama_available() else 'DOWN'}; Puter={'armed' if llm_router_puter_armed() else 'not armed'}"
+    except Exception:
+        llm_state = "LLM backends unknown"
+    lines.append(f"- LLM backends: {llm_state}.")
+    try:
+        import server_tools as _st
+        lines.append(f"- Swarm cache (live): {_st.swarm_cache_stats()}.")
+    except Exception as e:
+        lines.append(f"- Swarm cache: unavailable ({e})")
+    try:
+        import swarm_cache as _sc
+        coord = _sc.SwarmChannelCoordinator(os.path.join(BASE_DIR, '.swarm_channels'))
+        st = coord.verify_all_channels()
+        lines.append(f"- Channels: {sum(1 for v in st.values() if v)}/5 healthy (verified live).")
+    except Exception:
+        pass
+    try:
+        root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+        swarm_dir = os.path.join(root, 'swarm_tasks')
+        names = sorted(os.listdir(swarm_dir)) if os.path.isdir(swarm_dir) else []
+        lines.append(f"- swarm_tasks/ files on disk NOW: {', '.join(names) if names else 'none'}.")
+    except Exception:
+        pass
+    lines.append("- No Redis, no external agent daemons. The only API is localhost:5000.")
+    block = "REAL VERIFIED SYSTEM FACTS (refreshed seconds ago; the ONLY ground truth you may cite):\n" + "\n".join(lines)
+    _SWARM_REALITY_CACHE.update(t=now, block=block)
+    return block
+
+
+def _swarm_generate_turn(prompt, sys_prompt, fallback_text, include_memory=False, grounded=True):
     if include_memory:
+        # 1. Retrieve relevant semantic memories & user preferences
         try:
-            # 1. Retrieve relevant semantic memories & user preferences
             recalled = semantic_search_memory(prompt)
             if recalled:
-                context_prefix += f"\n\n[RECALLED SEMANTIC MEMORIES & ACCUMULATED KNOWLEDGE]:\n{recalled[:700]}"
-
-            # 2. Retrieve recent conversation history
+                sys_prompt += f"\n\n[RECALLED SEMANTIC MEMORIES]:\n{recalled[:700]}"
+        except Exception as e:
+            logger.debug(f"Memory recall notice: {e}")
+        # 2. Retrieve recent conversation history
+        try:
             history = load_memories()
             if history:
                 recent_turns = history[-5:]
@@ -2271,40 +2333,42 @@ def _swarm_generate_turn(prompt, sys_prompt, fallback_text, include_memory=True)
                     if txt:
                         history_lines.append(f"{role.upper()}: {txt[:140]}")
                 if history_lines:
-                    context_prefix += f"\n\n[RECENT INTERACTION HISTORY]:\n" + "\n".join(history_lines)
-
-            # 3. Retrieve recently grown codebase context from swarm_tasks
-            workspace_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-            swarm_dir = os.path.join(workspace_root, 'swarm_tasks')
-            if os.path.exists(swarm_dir):
-                task_files = sorted([f for f in os.listdir(swarm_dir) if f.endswith('.py')], reverse=True)
-                if task_files:
-                    context_prefix += f"\n\n[EXISTING CODEBASE CONTEXT]: Recent artifact 'swarm_tasks/{task_files[0]}' exists in workspace."
+                    sys_prompt += f"\n\n[RECENT INTERACTION HISTORY]:\n" + "\n".join(history_lines)
         except Exception as e:
-            logger.debug(f"Memory extraction notice: {e}")
+            logger.debug(f"History recall notice: {e}")
 
-    full_sys = f"{sys_prompt}{context_prefix}\n\nIMPORTANT: Build upon prior knowledge, do NOT give repetitive canned responses, adapt and grow the ideas dynamically." if context_prefix else sys_prompt
+    if grounded:
+        sys_prompt += "\n\n" + _swarm_reality_block()
+        sys_prompt += (
+            "\n\nHARD RULES: "
+            "(1) Only cite files, services, ports, or actions listed in the REAL VERIFIED SYSTEM FACTS above; "
+            "never claim anything else exists (no Redis, no invented ports/files). "
+            "(2) You have NOT executed anything: state proposals and analysis, never claim work was done. "
+            "(3) Prior roleplay text may be noise; prefer the verified facts over it. "
+            "(4) Keep the reply to the requested length."
+        )
+
+    full_content = f"{sys_prompt}\n\nTask/Directive: {prompt}" if sys_prompt else prompt
 
     # 1. Try Gemini Client directly with active 2026 models
     if gemini_client:
         for model in ACTIVE_SWARM_MODELS:
             try:
-                full_content = f"{full_sys}\n\nTask/Directive: {prompt}" if full_sys else prompt
                 resp = gemini_client.models.generate_content(model=model, contents=full_content)
                 if resp and resp.text and resp.text.strip():
                     return resp.text.strip(), model
             except Exception as e:
                 logger.debug(f"Gemini {model} swarm turn error: {e}")
-                
+
     # 2. Try router
     try:
-        msgs = [{'role': 'system', 'content': full_sys}, {'role': 'user', 'content': prompt}]
+        msgs = [{'role': 'system', 'content': sys_prompt}, {'role': 'user', 'content': prompt}]
         reply, used_model = generate_completion_with_model(msgs)
         if reply and reply.strip():
             return reply.strip(), used_model
     except Exception as e:
         logger.debug(f"Router swarm turn error: {e}")
-        
+
     # 3. Graceful fallback
     return fallback_text, "fallback"
 
@@ -2438,7 +2502,9 @@ def swarm_roundtable():
         for t in turns:
             t['name'] = t.get('bot_name', t.get('name', 'AGENT'))
             t['content'] = t.get('text', t.get('content', ''))
-            save_memory('model', f"[{t['bot_name']}] {t['text']}")
+            # NOTE: swarm turns are NOT persisted to memory -- they are roleplay
+            # syntheses, and writing them was polluting recall with theater
+            # (invented Redis daemons, fictitious files, fantasy fleet states).
             try:
                 global_event_queue.put({
                     'type': 'swarm_turn',
