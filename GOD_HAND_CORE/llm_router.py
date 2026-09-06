@@ -17,7 +17,7 @@ load_dotenv(os.path.join(ROOT_DIR, ".env"), override=True)
 OLLAMA_HOST = os.getenv("JESTER_OLLAMA_HOST", "http://localhost:11434")
 OLLAMA_URL = f"{OLLAMA_HOST}/api/chat"
 OLLAMA_TAGS_URL = f"{OLLAMA_HOST}/api/tags"
-DEFAULT_OLLAMA_MODEL = os.getenv("JESTER_OLLAMA_MODEL", "llama3.1")
+DEFAULT_OLLAMA_MODEL = os.getenv("JESTER_OLLAMA_MODEL", "qwen3:8b")
 # Was hardcoded to "gpt-4o" at the call site, which made the model name the rest
 # of the app reports to the client a guess rather than a fact.
 OPENAI_MODEL = os.getenv("JESTER_OPENAI_MODEL", "gpt-4o")
@@ -28,6 +28,15 @@ OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL") or None
 
 # Create a singleton client so we don't recreate it every call if we fall back
 openai_client = OpenAI(api_key=OPENAI_API_KEY, base_url=OPENAI_BASE_URL) if OPENAI_API_KEY else None
+
+# Groq (https://groq.com) offers a no-card, rate-limited free tier over the same
+# OpenAI-compatible shape. Env-gated: no GROQ_API_KEY, no route. Positioned
+# after local Ollama, before any real OpenAI key, so a working free local model
+# or a locally-hosted shim keeps winning.
+GROQ_API_KEY = os.getenv("GROQ_API_KEY") or None
+GROQ_BASE_URL = os.getenv("JESTER_GROQ_BASE_URL", "https://api.groq.com/openai/v1")
+GROQ_MODEL = os.getenv("JESTER_GROQ_MODEL", "qwen/qwen3-32b")
+groq_client = OpenAI(api_key=GROQ_API_KEY, base_url=GROQ_BASE_URL) if GROQ_API_KEY else None
 
 # Puter (https://puter.com) exposes an OpenAI-compatible endpoint that works with
 # a free auth token from https://puter.com/dashboard (API token section). No paid
@@ -116,7 +125,7 @@ def is_ollama_available(force=False):
 
 def is_available():
     """True when at least one backend can serve a completion."""
-    return bool(puter_client) or bool(openai_client) or is_ollama_available()
+    return bool(puter_client) or bool(openai_client) or bool(groq_client) or is_ollama_available()
 
 
 def tool_completion(messages, tools):
@@ -155,12 +164,20 @@ def tool_completion(messages, tools):
     if is_ollama_available():
         try:
             client = OpenAI(api_key="ollama", base_url=f"{OLLAMA_HOST}/v1")
-            res = client.chat.completions.create(model=DEFAULT_OLLAMA_MODEL, messages=messages, tools=tools)
+            res = client.chat.completions.create(model=DEFAULT_OLLAMA_MODEL, messages=messages, tools=tools, extra_body={"think": False})
             content, calls = extract(res)
             return content, calls, DEFAULT_OLLAMA_MODEL
         except Exception as e:
             logger.warning(f"Ollama tool-call attempt failed: {e}. Falling back.")
         _ollama_probe_cache["available"] = False
+
+    if groq_client:
+        try:
+            res = groq_client.chat.completions.create(model=GROQ_MODEL, messages=messages, tools=tools)
+            content, calls = extract(res)
+            return content, calls, f"groq:{GROQ_MODEL}"
+        except Exception as e:
+            logger.warning(f"Groq tool-call attempt failed: {e}. Falling back.")
 
     if not openai_client:
         raise ValueError("Ollama is unavailable, Puter is unconfigured/unreachable, and OPENAI_API_KEY is not set.")
@@ -264,13 +281,14 @@ def generate_completion_with_model(messages, require_json=False):
         payload = {
             "model": ollama_model,
             "messages": messages,
-            "stream": False
+            "stream": False,
+            "think": False
         }
         if require_json:
             payload["format"] = "json"
 
         try:
-            response = requests.post(OLLAMA_URL, json=payload, timeout=120)
+            response = requests.post(OLLAMA_URL, json=payload, timeout=600)
             if response.status_code == 200:
                 data = response.json()
                 return data.get("message", {}).get("content", ""), ollama_model
@@ -282,6 +300,21 @@ def generate_completion_with_model(messages, require_json=False):
         _ollama_probe_cache["available"] = False
     else:
         logger.info("Ollama is OFFLINE. Routing to cloud OpenAI.")
+
+    # 2b. Groq free tier (env-gated)
+    if groq_client:
+        logger.info(f"Executing via Groq ({GROQ_MODEL}).")
+        kwargs = {
+            "model": GROQ_MODEL,
+            "messages": messages
+        }
+        if require_json:
+            kwargs["response_format"] = {"type": "json_object"}
+        try:
+            res = groq_client.chat.completions.create(**kwargs)
+            return res.choices[0].message.content, f"groq:{GROQ_MODEL}"
+        except Exception as e:
+            logger.warning(f"Groq execution failed: {e}. Falling back to OpenAI.")
 
     # 3. Fallback to Cloud OpenAI
     if not openai_client:
@@ -334,14 +367,15 @@ def stream_completion(messages, require_json=False):
         payload = {
             "model": DEFAULT_OLLAMA_MODEL,
             "messages": messages,
-            "stream": True
+            "stream": True,
+            "think": False
         }
         if require_json:
             payload["format"] = "json"
 
         try:
             emitted = False
-            with requests.post(OLLAMA_URL, json=payload, timeout=120, stream=True) as response:
+            with requests.post(OLLAMA_URL, json=payload, timeout=600, stream=True) as response:
                 response.raise_for_status()
                 for line in response.iter_lines(decode_unicode=True):
                     if not line:
@@ -365,7 +399,25 @@ def stream_completion(messages, require_json=False):
             logger.warning(f"Ollama streaming failed: {e}. Falling back to Puter/OpenAI.")
         _ollama_probe_cache["available"] = False
     else:
-        logger.info("Ollama is OFFLINE. Streaming from cloud Puter/OpenAI.")
+        logger.info("Ollama is OFFLINE. Streaming from cloud Groq/Puter/OpenAI.")
+
+    if groq_client:
+        logger.info(f"Streaming via Groq ({GROQ_MODEL}).")
+        try:
+            stream = groq_client.chat.completions.create(
+                model=GROQ_MODEL,
+                messages=messages,
+                stream=True,
+            )
+            for event in stream:
+                if not event.choices:
+                    continue
+                chunk = event.choices[0].delta.content
+                if chunk:
+                    yield chunk, f"groq:{GROQ_MODEL}"
+            return
+        except Exception as e:
+            logger.warning(f"Groq streaming failed: {e}. Falling back to OpenAI.")
 
     if not openai_client and not puter_client:
         raise ValueError("Ollama is unavailable, Puter is unconfigured, and OPENAI_API_KEY is not set.")
