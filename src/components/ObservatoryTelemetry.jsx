@@ -44,11 +44,14 @@ export default function ObservatoryTelemetry({ onAnomalyChange }) {
   const alarmPlayedRef = useRef(false);
 
   const audioEnabledRef = useRef(audioEnabled);
-  audioEnabledRef.current = audioEnabled;
   const isAnomalyRef = useRef(isAnomaly);
-  isAnomalyRef.current = isAnomaly;
   const onAnomalyChangeRef = useRef(onAnomalyChange);
-  onAnomalyChangeRef.current = onAnomalyChange;
+
+  useEffect(() => {
+    audioEnabledRef.current = audioEnabled;
+    isAnomalyRef.current = isAnomaly;
+    onAnomalyChangeRef.current = onAnomalyChange;
+  });
 
   useEffect(() => {
     try {
