@@ -1399,6 +1399,9 @@ def execute_tool():
             'webcam_optics': lambda: server_tools.capture_webcam_analysis(cmd or 'Describe what the webcam sees in detail.'),
             'deep_research': lambda: server_tools.conduct_deep_research(cmd),
             'news_feed': lambda: server_tools.fetch_rss(subreddit_from(cmd) or 'r/singularity'),
+            'swarm_cache': lambda: server_tools.swarm_cache_stats(),
+            'swarm_cache_put': lambda: server_tools.swarm_cache_put(args.get('key', ''), args.get('value', '')),
+            'swarm_cache_get': lambda: server_tools.swarm_cache_get(args.get('key', '')),
             'knowledge_graph': lambda: server_tools.query_knowledge_graph(cmd),
             'offline_brain': lambda: server_tools.switch_to_offline(cmd or 'status'),
             'sandbox_execute': lambda: server_tools.execute_python_sandbox(cmd),
@@ -2193,7 +2196,27 @@ def swarm_agent_action():
             import gc
             gc.collect()
             vm = psutil.virtual_memory()
-            report = f"## JESTER MASTER FLEET OVERRIDE\n\n- Fleet Nodes: 5/5 Synchronized.\n- Working Memory: {vm.percent}% utilized ({round(vm.available/(1024*1024), 1)} MB free).\n- Master Command: All agent nodes granted full operational clearance."
+            try:
+                import server_tools
+                cache_stats = server_tools.swarm_cache_stats()
+                # Real 5-channel health + self-heal so FLEET SYNC does actual work.
+                import swarm_cache
+                coordinator = swarm_cache.SwarmChannelCoordinator(
+                    os.path.join(os.path.dirname(os.path.abspath(__file__)), '.swarm_channels'))
+                statuses = coordinator.verify_all_channels()
+                healthy = sum(1 for s in statuses.values() if s)
+                healed = coordinator.self_heal_channels()
+                channel_report = (f"Channels: {healthy}/5 healthy; healed: "
+                                  f"{', '.join(healed) if healed else 'none'}")
+            except Exception as e:
+                cache_stats = f"unavailable ({e})"
+                channel_report = "channel sync unavailable"
+            report = (f"## JESTER MASTER FLEET OVERRIDE\n\n"
+                      f"- Fleet Nodes: 5/5 Synchronized.\n"
+                      f"- Working Memory: {vm.percent}% utilized ({round(vm.available/(1024*1024), 1)} MB free).\n"
+                      f"- Swarm Cache: {cache_stats}\n"
+                      f"- {channel_report}\n"
+                      f"- Master Command: All agent nodes granted full operational clearance.")
             result = {'action': 'fleet_sync', 'report': report, 'bot_name': bot['name']}
 
         else:

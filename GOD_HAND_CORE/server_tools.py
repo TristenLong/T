@@ -22,6 +22,7 @@ try:
     import offline_brain
     import research_core
     import rss_core
+    import swarm_cache
     import system_core
     import vision_core
     from sandbox_core import sandbox_core
@@ -65,6 +66,59 @@ def fetch_rss(query: str, limit: int = 5) -> str:
     """Fetch the latest posts from a subreddit ('r/singularity') or any RSS/Atom feed URL. No API credentials required."""
     try:
         return rss_core.fetch_rss(query, limit)
+    except Exception as e:
+        return f"Error: {e}"
+
+# --- Swarm cache (shared cross-process memory, wired from task_1788652369) ---
+# Persistent mmap file lives in the GOD_HAND_CORE data dir so it survives restarts.
+_SWARM_CACHE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.swarm_cache.mmap')
+_swarm_cache = None
+
+
+def _get_swarm_cache():
+    global _swarm_cache
+    if _swarm_cache is None:
+        try:
+            _swarm_cache = swarm_cache.BoundedMmapCache(
+                capacity_bytes=1024 * 1024, cache_file=_SWARM_CACHE_PATH)
+        except Exception as e:
+            return f"Error initializing swarm cache: {e}"
+    return _swarm_cache
+
+
+def swarm_cache_put(key: str, value: str) -> str:
+    """Store a string value in the cross-process swarm cache under `key`."""
+    try:
+        cache = _get_swarm_cache()
+        if isinstance(cache, str):
+            return cache
+        ok = cache.put(key, value.encode('utf-8'))
+        return "STORED" if ok else "CACHE_FULL"
+    except Exception as e:
+        return f"Error: {e}"
+
+
+def swarm_cache_get(key: str) -> str:
+    """Retrieve a string value from the cross-process swarm cache by `key`."""
+    try:
+        cache = _get_swarm_cache()
+        if isinstance(cache, str):
+            return cache
+        val = cache.get(key)
+        return val.decode('utf-8') if val is not None else f"MISS: {key}"
+    except Exception as e:
+        return f"Error: {e}"
+
+
+def swarm_cache_stats() -> str:
+    """Report swarm cache occupancy (entries, bytes used, capacity)."""
+    try:
+        cache = _get_swarm_cache()
+        if isinstance(cache, str):
+            return cache
+        s = cache.stats()
+        return (f"entries={s['entries']} used_bytes={s['used_bytes']} "
+                f"capacity_bytes={s['capacity_bytes']} file={s['file']}")
     except Exception as e:
         return f"Error: {e}"
 
@@ -411,6 +465,7 @@ _PLAN_EXEC_WHITELIST = frozenset({
     'open_app_or_url', 'search_web', 'fetch_rss', 'list_apps',
     'query_knowledge_graph', 'diagnostics_report', 'list_mcp_servers',
     'conduct_deep_research', 'todo_add', 'todo_list', 'todo_mark',
+    'swarm_cache_put', 'swarm_cache_get', 'swarm_cache_stats',
 })
 
 
@@ -522,4 +577,7 @@ AVAILABLE_TOOLS = [
     todo_add,
     todo_list,
     todo_mark,
+    swarm_cache_put,
+    swarm_cache_get,
+    swarm_cache_stats,
 ]

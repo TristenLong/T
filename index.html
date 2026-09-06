@@ -9,9 +9,13 @@
     <script>
       window.PUTER_QUIET = true;
       globalThis.PUTER_QUIET = true;
-      if (typeof window !== 'undefined' && typeof window.__REACT_DEVTOOLS_GLOBAL_HOOK__ === 'undefined') {
-        window.__REACT_DEVTOOLS_GLOBAL_HOOK__ = { isDisabled: true };
-      }
+      (function() {
+        const _info = console.info;
+        console.info = function(...args) {
+          if (typeof args[0] === 'string' && args[0].includes('Download the React DevTools')) return;
+          return _info.apply(console, args);
+        };
+      })();
     </script>
   </head>
   <body>

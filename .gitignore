@@ -66,5 +66,8 @@ GOD_HAND_CORE/chroma_db/
 GOD_HAND_CORE/jester_V73_OMNIPRESENCE.db
 GOD_HAND_CORE/jester_memory.db
 GOD_HAND_CORE/jester_xp.json
+# Swarm cache mmap + channel state: rewritten on every fleet_sync (regenerable)
+GOD_HAND_CORE/.swarm_cache.mmap
+GOD_HAND_CORE/.swarm_channels/
 test_puter.mjs
 GOD_HAND_CORE/script.py
