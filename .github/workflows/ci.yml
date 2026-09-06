@@ -1,0 +1,23 @@
+name: CI
+
+on:
+  push:
+    branches: ["main", "fix/**"]
+  pull_request:
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest ruff
+      - name: Lint (ruff)
+        run: ruff check GOD_HAND_CORE/swarm_plugin tests/test_plugins.py tests/test_swarm_cache.py tests/conftest.py
+      - name: Unit tests (pytest)
+        run: python -m pytest tests/test_plugins.py tests/test_swarm_cache.py -q

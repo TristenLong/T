@@ -1422,8 +1422,17 @@ def execute_tool():
         }
 
         if tool_id not in dispatch:
-            return jsonify({'error': f'Unknown tool ID: {tool_id}'}), 400
-        result = dispatch[tool_id]()
+            # Hot-loaded swarm plugins (grown at runtime, no restart needed).
+            try:
+                import swarm_plugin.plugin_loader as _plugin_loader
+                plugin_result = _plugin_loader.invoke(tool_id, args)
+            except Exception as _pe:
+                plugin_result = f"PLUGIN ERROR: {_pe}"
+            if plugin_result is None:
+                return jsonify({'error': f'Unknown tool ID: {tool_id}'}), 400
+            result = plugin_result
+        else:
+            result = dispatch[tool_id]()
 
         try:
             new_xp, new_level, leveled_up = add_xp(10)
@@ -1434,6 +1443,85 @@ def execute_tool():
     except Exception as e:
         logger.error(f'EXECUTE_TOOL_ERROR: {str(e)}')
         return jsonify({'error': str(e)}), 500
+
+@app.route('/api/tools/grow', methods=['POST'])
+def api_tools_grow():
+    """Hot-grow a plugin tool at runtime (no restart). Registers live or rolls back."""
+    try:
+        import server_tools
+        data = request.json or {}
+        res = server_tools.grow_swarm_tool(
+            data.get('source', ''), data.get('name') or '',
+            commit=bool(data.get('commit', False)))
+        return jsonify({'status': 'SUCCESS', 'result': res})
+    except Exception as e:
+        logger.error(f'TOOLS_GROW_ERROR: {e}')
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/tools/remove', methods=['POST'])
+def api_tools_remove():
+    try:
+        import server_tools
+        data = request.json or {}
+        res = server_tools.remove_swarm_tool(data.get('name', ''))
+        return jsonify({'status': 'SUCCESS', 'result': res})
+    except Exception as e:
+        logger.error(f'TOOLS_REMOVE_ERROR: {e}')
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/tools/plugins', methods=['GET'])
+def api_tools_plugins():
+    try:
+        import swarm_plugin.plugin_loader as _pl
+        return jsonify({'status': 'SUCCESS', 'plugins': _pl.list_plugins()})
+    except Exception as e:
+        logger.error(f'TOOLS_PLUGINS_ERROR: {e}')
+        return jsonify({'error': str(e)}), 500
+
+
+# --- Autonomous growth: backlog + scheduler endpoints -------------------------
+
+@app.route('/api/growth/backlog', methods=['GET', 'POST'])
+def api_growth_backlog():
+    """GET lists the growth backlog; POST adds an idea {idea, priority?}."""
+    try:
+        if request.method == 'POST':
+            data = request.json or {}
+            idea = (data.get('idea') or '').strip()
+            if not idea:
+                return jsonify({'error': 'idea is required'}), 400
+            priority = int(data.get('priority', 5))
+            priority = max(1, min(priority, 10))
+            item = _add_growth_item(idea, priority)
+            return jsonify({'status': 'SUCCESS', 'item': item})
+        return jsonify({'status': 'SUCCESS', 'backlog': _load_growth_backlog(),
+                        'paused': _growth_paused})
+    except Exception as e:
+        logger.error(f'GROWTH_BACKLOG_ERROR: {e}')
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/growth/pause', methods=['POST'])
+def api_growth_pause():
+    try:
+        global _growth_paused
+        _growth_paused = bool((request.json or {}).get('paused', True))
+        return jsonify({'status': 'SUCCESS', 'paused': _growth_paused})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/growth/run_now', methods=['POST'])
+def api_growth_run_now():
+    """Run one growth tick synchronously (generates, registers, rolls back)."""
+    try:
+        return jsonify({'status': 'SUCCESS', 'result': _growth_tick()})
+    except Exception as e:
+        logger.error(f'GROWTH_RUN_NOW_ERROR: {e}')
+        return jsonify({'error': str(e)}), 500
+
 
 @app.route('/api/upgrade/check', methods=['POST'])
 def upgrade_check():
@@ -2373,6 +2461,44 @@ def _swarm_generate_turn(prompt, sys_prompt, fallback_text, include_memory=False
     return fallback_text, "fallback"
 
 
+def _generate_plugin_code(goal):
+    """Ask CODEX to write a hot-loadable plugin for the running server.
+
+    Targets the plugin contract exactly (tool fns + optional self_check), so
+    whatever it returns can be gated by plugin_loader and rolled back on any
+    failure. Returns (code, used_model).
+    """
+    prompt = (
+        "You are CODEX writing ONE hot-loadable plugin module for the running "
+        "JESTER server (Python 3.10+, Windows or Linux).\n"
+        f"GOAL: {goal[:1200]}\n"
+        "CONTRACT (hard rules, ALL mandatory):\n"
+        "- Output ONLY python code, no markdown fences, no backticks, no prose.\n"
+        "- Real, runnable logic. Standard library + psutil only; import nothing "
+        "that might be missing. No network calls. No writing files except inside "
+        "the plugin directory. Do not call the server API.\n"
+        "- Expose at least one top-level function whose name ENDS in '_tool' "
+        "(e.g. summarize_tool(value: str = '') -> str). Every tool must return a "
+        "string and must handle missing/invalid input gracefully.\n"
+        "- OPTIONAL: define _self_check() -> str returning exactly 'OK' when the "
+        "module is healthy, or 'FAIL: <reason>'. The plugin is rejected unless it "
+        "passes, so make it honest and quick.\n"
+        "- No unittest blocks, no __main__, no CLI, no class definitions required."
+    )
+    fallback_code = (
+        'def echo_info_tool(question: str = "") -> str:\n'
+        '    return f"echo_info:{question or \'ok\'}"\n\n\n'
+        'def _self_check() -> str:\n'
+        '    return "OK"\n'
+    )
+    code, used_model = _swarm_generate_turn(
+        prompt, SWARM_BOTS['codex']['system_prompt'], fallback_code,
+        include_memory=False, grounded=False)
+    code = re.sub(r'^```[\w]*\n', '', code.strip())
+    code = re.sub(r'\n```$', '', code.strip())
+    return code, used_model
+
+
 @app.route('/api/swarm/agent_chat', methods=['POST'])
 def swarm_agent_chat():
     try:
@@ -2622,7 +2748,7 @@ def api_swarm_execute_consensus():
     
     workspace_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
     if not target_file:
-        target_file = os.path.join(workspace_root, 'swarm_tasks', f"task_{int(time.time())}.py")
+        target_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'swarm_plugin', f"consensus_{int(time.time())}.py")
         os.makedirs(os.path.dirname(target_file), exist_ok=True)
     elif not os.path.isabs(target_file):
         target_file = os.path.abspath(os.path.join(workspace_root, target_file))
@@ -2725,6 +2851,25 @@ def api_swarm_execute_consensus():
         if commit:
             subprocess.run(['git', 'add', target_file], cwd=workspace_root, capture_output=True, text=True)
         rel_path = os.path.relpath(target_file, workspace_root)
+        # Real growth: consensus code that lands in swarm_plugin/ must actually
+        # compile AND pass hot-registration (tools + self_check) or it is rolled
+        # back -- never a dead file on disk.
+        if os.path.normpath(target_file).replace('\\', '/').startswith(
+                os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'swarm_plugin')).replace('\\', '/')):
+            import swarm_plugin.plugin_loader as _pl
+            import server_tools as _st
+            pname = os.path.splitext(os.path.basename(target_file))[0]
+            reg = _pl.grow(pname, code, commit=commit)
+            if reg.get('ok'):
+                _st.refresh_plugin_tools()
+                git_output = reg.get('name')
+                test_output = f"REGISTERED plugin tools: {', '.join(reg.get('tools') or [])}"
+            else:
+                test_output = f"PLUGIN_REJECTED: {reg.get('error')}"
+                try:
+                    os.remove(target_file)
+                except OSError:
+                    pass
         save_memory('model', f"[CODE GROWN: {rel_path}] Topic: {topic}. Size: {len(code)} bytes. Syntax check: {test_output}")
 
         return jsonify({
@@ -2836,9 +2981,106 @@ def api_swarm_run_task():
 
 
 
+# --- Autonomous growth: scheduler core ----------------------------------------
+
+_GROWTH_BACKLOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.growth_backlog.json')
+_GROWTH_LOCK = threading.Lock()
+_GROWTH_TICK_SECONDS = float(os.getenv('JESTER_GROWTH_TICK_SECONDS', '300'))
+_GROWTH_MAX_PLUGINS = int(os.getenv('JESTER_GROWTH_MAX_PLUGINS', '25'))
+_growth_paused = False
+
+
+def _load_growth_backlog():
+    try:
+        with open(_GROWTH_BACKLOG_FILE, 'r', encoding='utf-8') as f:
+            items = json.load(f)
+            return items if isinstance(items, list) else []
+    except Exception:
+        return []
+
+
+def _save_growth_backlog(items):
+    try:
+        with open(_GROWTH_BACKLOG_FILE, 'w', encoding='utf-8') as f:
+            json.dump(items, f, indent=2)
+    except Exception as e:
+        logger.error(f'GROWTH_BACKLOG_SAVE: {e}')
+
+
+def _add_growth_item(idea, priority=5):
+    item = {
+        'id': f'g{int(time.time() * 1000)}',
+        'idea': idea,
+        'priority': max(1, min(int(priority or 5), 10)),
+        'added': time.time(),
+        'status': 'pending',
+    }
+    with _GROWTH_LOCK:
+        items = _load_growth_backlog()
+        items.append(item)
+        _save_growth_backlog(items)
+    return item
+
+
+def _llm_available():
+    return bool(gemini_client or llm_router_available())
+
+
+def _growth_tick():
+    """Consume the highest-priority pending growth idea (one per tick).
+
+    Generates plugin code, hot-registers it, and rolls the file back on any
+    failure. Gated on LLM availability and a hard plugin-count ceiling. Grown
+    plugins are committed to git so they survive restarts.
+    """
+    with _GROWTH_LOCK:
+        if _growth_paused:
+            return 'PAUSED'
+        items = _load_growth_backlog()
+        pending = [i for i in items if i.get('status') == 'pending']
+        if not pending:
+            return 'IDLE'
+        if not _llm_available():
+            return 'LLM_UNAVAILABLE'
+        import swarm_plugin.plugin_loader as _pl
+        import server_tools as _st
+        if len(list(_pl.iter_tool_functions())) >= _GROWTH_MAX_PLUGINS:
+            return f'MAX_PLUGINS_REACHED ({_GROWTH_MAX_PLUGINS})'
+        item = sorted(pending, key=lambda i: (-int(i.get('priority', 5)),
+                                              float(i.get('added', 0))))[0]
+        try:
+            name = f"grown_{int(time.time())}"
+            code, used_model = _generate_plugin_code(item['idea'])
+            reg = _pl.grow(name, code, commit=True)
+            if not reg.get('ok'):
+                _pl.remove(name)
+                item.update(status='failed', error=str(reg.get('error', ''))[:200],
+                            used_model=used_model)
+            else:
+                _st.refresh_plugin_tools()
+                item.update(status='done', plugin=name,
+                            tools=reg.get('tools') or [], used_model=used_model)
+        except Exception as e:
+            logger.error(f'GROWTH_TICK_ITEM_ERROR: {e}')
+            item.update(status='failed', error=str(e)[:200])
+        _save_growth_backlog(items)
+        return f"OK item={item['id']} status={item['status']}"
+    return 'LOCK_BUSY'
+
+
+def _growth_loop():
+    while True:
+        try:
+            _growth_tick()
+        except Exception as e:
+            logger.error(f'GROWTH_TICK_ERROR: {e}')
+        time.sleep(_GROWTH_TICK_SECONDS)
+
+
 if __name__ == '__main__':
     threading.Thread(target=_fact_miner_worker, name='fact-miner', daemon=True).start()
     threading.Thread(target=_session_note_worker, name='session-note', daemon=True).start()
+    threading.Thread(target=_growth_loop, name='growth-scheduler', daemon=True).start()
     # Was host='0.0.0.0', which published every endpoint below -- including the
     # unauthenticated /api/sandbox (arbitrary Python), /api/execute_tool
     # (arbitrary subprocesses via mcp_execute) and computer_use (mouse/keyboard

@@ -69,5 +69,6 @@ GOD_HAND_CORE/jester_xp.json
 # Swarm cache mmap + channel state: rewritten on every fleet_sync (regenerable)
 GOD_HAND_CORE/.swarm_cache.mmap
 GOD_HAND_CORE/.swarm_channels/
+GOD_HAND_CORE/.growth_backlog.json
 test_puter.mjs
 GOD_HAND_CORE/script.py

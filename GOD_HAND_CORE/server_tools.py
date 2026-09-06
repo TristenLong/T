@@ -23,6 +23,7 @@ try:
     import research_core
     import rss_core
     import swarm_cache
+    import swarm_plugin.plugin_loader as plugin_loader
     import system_core
     import vision_core
     from sandbox_core import sandbox_core
@@ -466,6 +467,9 @@ _PLAN_EXEC_WHITELIST = frozenset({
     'query_knowledge_graph', 'diagnostics_report', 'list_mcp_servers',
     'conduct_deep_research', 'todo_add', 'todo_list', 'todo_mark',
     'swarm_cache_put', 'swarm_cache_get', 'swarm_cache_stats',
+    'grow_swarm_tool', 'remove_swarm_tool',
+    'host_info_tool', 'log_tail_tool',
+    'repo_status_tool', 'process_health_tool', 'port_map_tool',
 })
 
 
@@ -551,6 +555,52 @@ def mcp_execute(server: str, tool_name: str, tool_args: dict | None = None) -> s
     )
 
 
+# --- Hot-loadable runtime plugins (swarm_plugin/) ----------------------------
+# The static arsenal below (AVAILABLE_TOOLS) is rebuilt on plugin changes so the
+# LLM tool loop and the Arsenal see exactly the same live function set. Grown
+# plugins are real, importable, smoke-checked on the running server -- no dead
+# task files, no restart needed.
+
+
+def refresh_plugin_tools() -> int:
+    """Rebuild AVAILABLE_TOOLS as static arsenal + hot-loaded plugin tools."""
+    global AVAILABLE_TOOLS
+    AVAILABLE_TOOLS = _BASE_TOOLS + [fn for _n, fn in plugin_loader.iter_tool_functions()]
+    return len(AVAILABLE_TOOLS)
+
+
+def grow_swarm_tool(source: str, name: str = "", commit: bool = False) -> str:
+    """Hot-add a new working tool at runtime from plugin source; registers immediately.
+
+    With commit=True the grown plugin is versioned in git ([PLUGIN] grow ...) so
+    it survives restarts and is auditable.
+    """
+    import re
+    import time
+    if not name or not name.strip():
+        m = re.search(r'def ([a-z_][a-z0-9_]*_tool)\(', source or '')
+        name = m.group(1)[:-5] if m else f"grown_{int(time.time())}"
+    res = plugin_loader.grow(str(name).strip(), source or '', commit=bool(commit))
+    if not res.get('ok'):
+        return f"FAILED: {res.get('error', 'unknown error')}"
+    refresh_plugin_tools()
+    tail = ""
+    if res.get('commit') and res['commit'] != 'COMMITTED':
+        tail = f" (git: {res['commit']})"
+    return f"GROWN {res['name']}: registered tools: {', '.join(res.get('tools') or [])}{tail}"
+
+
+def remove_swarm_tool(name: str, commit: bool = False) -> str:
+    """Remove a grown plugin (and any tools it registered) from the live server."""
+    res = plugin_loader.remove(str(name).strip() or '', commit=bool(commit))
+    if res.get('ok'):
+        refresh_plugin_tools()
+    tail = ""
+    if res.get('commit') and res['commit'] != 'COMMITTED':
+        tail = f" (git: {res['commit']})"
+    return f"REMOVED {res['name']}{tail}"
+
+
 AVAILABLE_TOOLS = [
     execute_computer_use,
     dispatch_coder_swarm,
@@ -580,4 +630,12 @@ AVAILABLE_TOOLS = [
     swarm_cache_put,
     swarm_cache_get,
     swarm_cache_stats,
+    grow_swarm_tool,
+    remove_swarm_tool,
 ]
+
+_BASE_TOOLS = list(AVAILABLE_TOOLS)
+
+# Load whatever grew since last boot: bad plugins are logged, never fatal.
+plugin_loader.reload_all()
+refresh_plugin_tools()
