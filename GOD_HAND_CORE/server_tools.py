@@ -601,6 +601,33 @@ def remove_swarm_tool(name: str, commit: bool = False) -> str:
     return f"REMOVED {res['name']}{tail}"
 
 
+def query_error_patterns(limit: int = 20, unresolved_only: bool = False) -> str:
+    """Query error patterns the system has learned from. Shows recurring errors, their types, and resolutions that worked."""
+    try:
+        import error_learning
+        return error_learning.get_error_patterns(limit=limit, unresolved_only=unresolved_only)
+    except Exception as e:
+        return f"Error: {e}"
+
+
+def error_summary() -> str:
+    """One-line error stats: total errors logged, unresolved count, and top error types."""
+    try:
+        import error_learning
+        return error_learning.error_summary()
+    except Exception as e:
+        return f"Error: {e}"
+
+
+def mark_error_resolved(source: str, error_message: str, resolution: str) -> str:
+    """Mark a known error as resolved with the fix that worked. This teaches the system what works."""
+    try:
+        import error_learning
+        return error_learning.mark_resolved(source, error_message[:500], resolution)
+    except Exception as e:
+        return f"Error: {e}"
+
+
 AVAILABLE_TOOLS = [
     execute_computer_use,
     dispatch_coder_swarm,
@@ -632,6 +659,9 @@ AVAILABLE_TOOLS = [
     swarm_cache_stats,
     grow_swarm_tool,
     remove_swarm_tool,
+    query_error_patterns,
+    error_summary,
+    mark_error_resolved,
 ]
 
 _BASE_TOOLS = list(AVAILABLE_TOOLS)

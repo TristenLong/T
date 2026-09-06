@@ -1128,6 +1128,7 @@ def _agent_events(messages, sys_prompt, max_iters=3):
         f"After the tool returns, stop calling tools and give your answer immediately "
         f"(a second corrective call is allowed only if the first tool FAILED -- retry "
         f"with fixed arguments once, then answer). "
+        f"If a tool fails repeatedly, call error_summary to see past error patterns and resolutions before giving up. "
         f"Available tools: {tool_names}."
     )
     msgs[0] = {'role': 'system', 'content': msgs[0]['content'] + caller_note}
@@ -1143,6 +1144,11 @@ def _agent_events(messages, sys_prompt, max_iters=3):
             content, calls, model = llm_router.tool_completion(msgs, tools)
         except Exception as e:
             logger.warning(f'TOOL CALLING UNSUPPORTED, PLAIN STREAM FALLBACK: {e}')
+            try:
+                import error_learning
+                error_learning.record_error('agent_tool_completion', e, context='tool_call_failed_fallback_to_plain')
+            except Exception:
+                pass
             # Non-stream so a model that writes `{"name":...}` as text is
             # salvaged below instead of leaking raw tool JSON to the user.
             try:
@@ -1150,6 +1156,12 @@ def _agent_events(messages, sys_prompt, max_iters=3):
                 calls = None
             except Exception as f:
                 logger.warning(f'PLAIN FALLBACK ALSO FAILED: {f}')
+                try:
+                    import error_learning
+                    error_learning.record_error('agent_llm_total_failure', f,
+                                                context=f'tool_error={str(e)[:200]}')
+                except Exception:
+                    pass
                 yield {'text': f"[I could not reach the LLM: {e}]", 'model': 'NONE'}
                 return
         if content:
@@ -1280,6 +1292,11 @@ def generate_fallback_response(messages, sys_prompt, max_retries=3):
                 time.sleep(wait_time)
             else:
                 logger.error(f'OLLAMA/OPENAI ERROR: {e}')
+                try:
+                    import error_learning
+                    error_learning.record_error('generate_fallback', e, context=f'attempt={attempt+1}/{max_retries}')
+                except Exception:
+                    pass
                 raise
     raise RuntimeError("Fallback response failed")
 
@@ -1309,6 +1326,11 @@ def generate_gemini_response(sys_prompt, history, msg, max_retries=3):
                 time.sleep(wait_time)
             else:
                 logger.error(f'GEMINI ERROR: {e}')
+                try:
+                    import error_learning
+                    error_learning.record_error('generate_gemini', e, context=f'attempt={attempt+1}/{max_retries}')
+                except Exception:
+                    pass
                 raise e
 
 @app.route('/api/vision', methods=['POST'])
@@ -1402,6 +1424,9 @@ def execute_tool():
             'swarm_cache': lambda: server_tools.swarm_cache_stats(),
             'swarm_cache_put': lambda: server_tools.swarm_cache_put(args.get('key', ''), args.get('value', '')),
             'swarm_cache_get': lambda: server_tools.swarm_cache_get(args.get('key', '')),
+            'error_summary': lambda: server_tools.error_summary(),
+            'query_error_patterns': lambda: server_tools.query_error_patterns(limit=int(args.get('limit', 20) or 20), unresolved_only=bool(args.get('unresolved_only', False))),
+            'mark_error_resolved': lambda: server_tools.mark_error_resolved(args.get('source', ''), args.get('error_message', ''), args.get('resolution', '')),
             'knowledge_graph': lambda: server_tools.query_knowledge_graph(cmd),
             'offline_brain': lambda: server_tools.switch_to_offline(cmd or 'status'),
             'sandbox_execute': lambda: server_tools.execute_python_sandbox(cmd),
@@ -3062,6 +3087,12 @@ def _growth_tick():
                             tools=reg.get('tools') or [], used_model=used_model)
         except Exception as e:
             logger.error(f'GROWTH_TICK_ITEM_ERROR: {e}')
+            try:
+                import error_learning
+                error_learning.record_error('growth_scheduler', e,
+                                            context=f'idea={item.get("idea", "")[:100]}')
+            except Exception:
+                pass
             item.update(status='failed', error=str(e)[:200])
         _save_growth_backlog(items)
         return f"OK item={item['id']} status={item['status']}"
