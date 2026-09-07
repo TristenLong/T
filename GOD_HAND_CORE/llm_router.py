@@ -38,6 +38,20 @@ GROQ_BASE_URL = os.getenv("JESTER_GROQ_BASE_URL", "https://api.groq.com/openai/v
 GROQ_MODEL = os.getenv("JESTER_GROQ_MODEL", "qwen/qwen3-32b")
 groq_client = OpenAI(api_key=GROQ_API_KEY, base_url=GROQ_BASE_URL) if GROQ_API_KEY else None
 
+# OpenRouter (https://openrouter.ai) exposes an OpenAI-compatible endpoint and a
+# free tier of open-weight models (qwen/qwen3-coder:free, nvidia/nemotron-3-
+# ultra-550b-a55b:free, z-ai/glm-5.2:free, minimax/minimax-m3:free, ...) that
+# needs only an email sign-up key -- no card. Env-gated: no OPENROUTER_API_KEY,
+# no route. Default model uses OpenRouter's free auto-router.
+# NOTE (Sep 2026): Anthropic/OpenAI flagships are NOT on the free tier. Claude
+# Fable 5.1 and GPT-6 Astra exist there as paid 'anthropic/claude-fable-5.1'
+# and 'openai/gpt-6-astra' -- wire them via JESTER_OPENROUTER_MODEL only once
+# the OpenRouter account is funded.
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY") or None
+OPENROUTER_BASE_URL = os.getenv("JESTER_OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+OPENROUTER_MODEL = os.getenv("JESTER_OPENROUTER_MODEL", "openrouter/free")
+openrouter_client = OpenAI(api_key=OPENROUTER_API_KEY, base_url=OPENROUTER_BASE_URL) if OPENROUTER_API_KEY else None
+
 # Puter (https://puter.com) exposes an OpenAI-compatible endpoint that works with
 # a free auth token from https://puter.com/dashboard (API token section). No paid
 # API keys needed; the token holder covers usage under puter's user-pays model.
@@ -125,7 +139,7 @@ def is_ollama_available(force=False):
 
 def is_available():
     """True when at least one backend can serve a completion."""
-    return bool(puter_client) or bool(openai_client) or bool(groq_client) or is_ollama_available()
+    return bool(puter_client) or bool(openai_client) or bool(groq_client) or bool(openrouter_client) or is_ollama_available()
 
 
 def tool_completion(messages, tools):
@@ -178,6 +192,14 @@ def tool_completion(messages, tools):
             return content, calls, f"groq:{GROQ_MODEL}"
         except Exception as e:
             logger.warning(f"Groq tool-call attempt failed: {e}. Falling back.")
+
+    if openrouter_client:
+        try:
+            res = openrouter_client.chat.completions.create(model=OPENROUTER_MODEL, messages=messages, tools=tools)
+            content, calls = extract(res)
+            return content, calls, f"openrouter:{OPENROUTER_MODEL}"
+        except Exception as e:
+            logger.warning(f"OpenRouter tool-call attempt failed: {e}. Falling back.")
 
     if not openai_client:
         raise ValueError("Ollama is unavailable, Puter is unconfigured/unreachable, and OPENAI_API_KEY is not set.")
@@ -316,6 +338,21 @@ def generate_completion_with_model(messages, require_json=False):
         except Exception as e:
             logger.warning(f"Groq execution failed: {e}. Falling back to OpenAI.")
 
+    # 2c. OpenRouter free tier (env-gated)
+    if openrouter_client:
+        logger.info(f"Executing via OpenRouter ({OPENROUTER_MODEL}).")
+        kwargs = {
+            "model": OPENROUTER_MODEL,
+            "messages": messages
+        }
+        if require_json:
+            kwargs["response_format"] = {"type": "json_object"}
+        try:
+            res = openrouter_client.chat.completions.create(**kwargs)
+            return res.choices[0].message.content, f"openrouter:{OPENROUTER_MODEL}"
+        except Exception as e:
+            logger.warning(f"OpenRouter execution failed: {e}. Falling back to OpenAI.")
+
     # 3. Fallback to Cloud OpenAI
     if not openai_client:
         raise ValueError("Puter is unconfigured/unreachable, Ollama is unavailable, and OPENAI_API_KEY is not set.")
@@ -418,6 +455,24 @@ def stream_completion(messages, require_json=False):
             return
         except Exception as e:
             logger.warning(f"Groq streaming failed: {e}. Falling back to OpenAI.")
+
+    if openrouter_client:
+        logger.info(f"Streaming via OpenRouter ({OPENROUTER_MODEL}).")
+        try:
+            stream = openrouter_client.chat.completions.create(
+                model=OPENROUTER_MODEL,
+                messages=messages,
+                stream=True,
+            )
+            for event in stream:
+                if not event.choices:
+                    continue
+                chunk = event.choices[0].delta.content
+                if chunk:
+                    yield chunk, f"openrouter:{OPENROUTER_MODEL}"
+            return
+        except Exception as e:
+            logger.warning(f"OpenRouter streaming failed: {e}. Falling back to OpenAI.")
 
     if not openai_client and not puter_client:
         raise ValueError("Ollama is unavailable, Puter is unconfigured, and OPENAI_API_KEY is not set.")
