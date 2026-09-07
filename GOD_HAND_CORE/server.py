@@ -3,6 +3,8 @@ import os
 import re
 import socket
 import sqlite3
+import subprocess
+import shutil
 import time
 import math
 
@@ -2713,97 +2715,1053 @@ def api_optimize_ram():
     return jsonify(res)
 
 
+# --------------------------------------------------------------------------
+# Web search engine cascade + relevance ranking shared by /api/web/search and
+# /api/play/escort. Engines keyword-skew on verbs/ambiguous tokens ("dig dug"
+# -> DNS-tool garbage), so results are filtered by substantive token coverage.
+# --------------------------------------------------------------------------
+_WEB_STOPWORDS = set((
+    'the', 'a', 'an', 'of', 'for', 'and', 'or', 'in', 'on', 'to', 'with',
+    'my', 'your', 'me', 'us', 'it', 'its', 'is', 'are', 'was', 'were',
+    'this', 'that', 'these', 'those', 'free', 'online', 'in', 'browser',
+    'browsers', 'web', 'site', 'sites', 'website', 'new', 'best', 'version',
+    'play', 'playing', 'open', 'opening', 'click', 'now', 'watch', 'get',
+    'find', 'some', 'any', 'where', 'can', 'could', 'please', 'just', 'do',
+    'does', 'have', 'has', 'had', 'there', 'here', 'from', 'by', 'at', 'no',
+    'yes', 'ok', 'help', 'would', 'should', 'want', 'like', 'love', 'sir',
+))
+
+# Known playable-game sources can be auto-trusted over generic pages.
+_GAME_ENGINE_DOMAINS = {
+    'retrogames.cz', 'arcadespot.com', 'arcadino.com', 'onlineclassicgame.com',
+    'onlineclassicgames.com', 'retroplayonline.com', 'archive.org', 'poki.com',
+    'crazygames.com', 'friv.com', 'freegames.org', 'onlinegames.io',
+    'kongregate.com', 'miniclip.com', 'y8.com', 'gamesgames.com', 'itch.io',
+    'armorgames.com', 'newgrounds.com', 'playemulator.com', 'retrogames.onl',
+}
+
+
+def _normalize_compact(text):
+    return re.sub(r'[^a-z0-9]', '', (text or '').lower())
+
+
+def _query_tokens(query):
+    toks = []
+    for w in re.split(r'[^a-z0-9]+', (query or '').lower()):
+        if w and len(w) >= 2 and w not in _WEB_STOPWORDS:
+            toks.append(_normalize_compact(w))
+    return toks
+
+
+def _fetch_web_links(query, max_items=8):
+    import urllib.parse as _urlparse
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/125.0 Safari/537.36'}
+
+    def _bing(mkt=None):
+        url = 'https://www.bing.com/search?q=' + _urlparse.quote(query) + '&format=rss'
+        if mkt:
+            url += f'&mkt={mkt}'
+        resp = requests.get(url, headers=headers, timeout=12)
+        if resp.status_code != 200:
+            return []
+        soup = BeautifulSoup(resp.content, 'xml')
+        items = []
+        for it in soup.find_all('item'):
+            title = (it.title.get_text() if it.title else '').strip()
+            link = (it.link.get_text() if it.link else '').strip()
+            if title and link.startswith('http'):
+                items.append({'title': title, 'url': link})
+        return items
+
+    def _ddg_html():
+        resp = requests.get(
+            'https://html.duckduckgo.com/html/?q=' + _urlparse.quote(query),
+            headers=headers, timeout=12,
+        )
+        if resp.status_code != 200:
+            return []
+        soup = BeautifulSoup(resp.content, 'html.parser')
+        items = []
+        for res in soup.select('.result'):
+            a = res.select_one('a.result__a')
+            if not a:
+                continue
+            href = a.get('href') or ''
+            if href.startswith('//duckduckgo.com/l/'):
+                href = _urlparse.parse_qs(_urlparse.urlparse(href).query).get('uddg', [''])[0]
+            title = a.get_text().strip()
+            if title and href.startswith('http'):
+                items.append({'title': title, 'url': href})
+        return items
+
+    def _ddg_lite():
+        resp = requests.get(
+            'https://lite.duckduckgo.com/lite/?q=' + _urlparse.quote(query),
+            headers=headers, timeout=12,
+        )
+        if resp.status_code != 200:
+            return []
+        soup = BeautifulSoup(resp.content, 'html.parser')
+        items = []
+        for a in soup.select('a[rel="nofollow"]'):
+            href = a.get('href') or ''
+            real = href
+            if 'uddg=' in href:
+                pd = _urlparse.parse_qs(_urlparse.urlparse(href).query)
+                real = pd.get('uddg', [''])[0]
+            title = a.get_text().strip()
+            if title and real.startswith('http'):
+                items.append({'title': title, 'url': real})
+        return items
+
+    def _ddgs():
+        from research_core import search as ddg
+        items = []
+        for x in ddg(query, max_results=7):
+            url = (x.get('href') or x.get('url') or '').strip()
+            title = (x.get('title') or '').strip()
+            if url.startswith('http') and title:
+                items.append({'title': title, 'url': url})
+        return items
+
+    engines = (('bing-a', lambda: _bing()), ('bing-b', lambda: _bing('en-US')),
+               ('ddg-html', _ddg_html), ('ddg-lite', _ddg_lite), ('ddgs', _ddgs))
+    collected = {}
+    for attempt in range(2):
+        for name, fn in engines:
+            if name in collected:
+                continue
+            try:
+                items = fn()
+                if items:
+                    collected[name] = items
+            except Exception:
+                continue
+        union, seen = [], set()
+        for items in collected.values():
+            for it in items:
+                u = it.get('url', '')
+                if u and u not in seen:
+                    seen.add(u)
+                    union.append(it)
+        if len(union) >= 3:
+            break
+        if attempt == 0:
+            time.sleep(1.5)
+    return union[:max_items]
+
+
+def _filter_and_rank_web(items, query):
+    """Drop keyword-skewed garbage, then rank by token coverage + game-domains."""
+    if not items:
+        return []
+    toks = _query_tokens(query)
+    if not toks:
+        return items
+    scored = []
+    for it in items:
+        hay = _normalize_compact(it.get('title', '') + ' ' + it.get('domain', ''))
+        coverage = sum(1 for t in toks if t and t in hay)
+        if coverage:
+            scored.append((coverage, it))
+    scored = [(-c, it) for c, it in scored]
+    if not scored:
+        return items
+    req = len(toks) if len(toks) <= 2 else max(2, int(len(toks) * 0.5))
+    kept = [it for c, it in scored if -c >= req]
+    if not kept:
+        kept = [it for c, it in scored if -c >= 1]
+    if not kept:
+        return items
+    def _rank(item):
+        hay = _normalize_compact(item.get('title', '') + ' ' + item.get('domain', ''))
+        return (
+            sum(1 for t in toks if t and t in hay),
+            1 if item.get('domain') in _GAME_ENGINE_DOMAINS else 0,
+            -len(item.get('title', '')),
+        )
+    ranked = sorted(kept, key=_rank, reverse=True)
+    for it in ranked:
+        it['score'] = _rank(it)[0]
+    return ranked
+
+
+def _web_search_results(query):
+    """Engines -> domain dedupe -> relevance filter/rank. Returns scored dicts."""
+    seen = set()
+    out = []
+    for item in _fetch_web_links(query):
+        url = item.get('url', '')
+        if '://' not in url:
+            continue
+        domain = re.sub(r'^www\.', '', url.split('/', 3)[2]).lower()
+        if not domain or domain in seen:
+            continue
+        seen.add(domain)
+        out.append({'title': item.get('title', domain)[:160], 'url': url, 'domain': domain})
+        if len(out) >= 8:
+            break
+    if not out:
+        return []
+    return _filter_and_rank_web(out, query)
+
+
 @app.route('/api/web/search', methods=['POST'])
 def api_web_search():
-    """Live web search for find/ask directives. Returns structured links so the
-    HUD can render clickable results instead of just opening a search page."""
-    import re as _re
-    import urllib.parse as _urlparse
+    """Live web search for find/ask directives. Returns structured, relevance-
+    filtered links so the HUD renders clickable results instead of garbage."""
     data = request.json or {}
     query = (data.get('query') or '').strip()
     if not query:
         return jsonify({'status': 'ERROR', 'message': 'Empty query'}), 400
-
-    def _fetch_web_links():
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/125.0 Safari/537.36'}
-        # 1) Bing RSS (fast, clean XML, tolerant of bots)
-        try:
-            resp = requests.get(
-                'https://www.bing.com/search?q=' + _urlparse.quote(query) + '&format=rss',
-                headers=headers, timeout=12,
-            )
-            if resp.status_code == 200:
-                soup = BeautifulSoup(resp.content, 'xml')
-                items = []
-                for it in soup.find_all('item'):
-                    title = (it.title.get_text() if it.title else '').strip()
-                    link = (it.link.get_text() if it.link else '').strip()
-                    if title and link.startswith('http'):
-                        items.append({'title': title, 'url': link})
-                if len(items) >= 3:
-                    return items
-        except Exception:
-            pass
-        # 2) DuckDuckGo HTML scrape
-        try:
-            resp = requests.get(
-                'https://html.duckduckgo.com/html/?q=' + _urlparse.quote(query),
-                headers=headers, timeout=12,
-            )
-            if resp.status_code == 200:
-                soup = BeautifulSoup(resp.content, 'html.parser')
-                items = []
-                for res in soup.select('.result'):
-                    a = res.select_one('a.result__a')
-                    if not a:
-                        continue
-                    href = a.get('href') or ''
-                    if href.startswith('//duckduckgo.com/l/'):
-                        href = _urlparse.parse_qs(_urlparse.urlparse(href).query).get('uddg', [''])[0]
-                    title = a.get_text().strip()
-                    if title and href.startswith('http'):
-                        items.append({'title': title, 'url': href})
-                if len(items) >= 3:
-                    return items
-        except Exception:
-            pass
-        # 3) ddgs library (last resort)
-        try:
-            from research_core import search as ddg
-            items = []
-            for x in ddg(query, max_results=7):
-                url = (x.get('href') or x.get('url') or '').strip()
-                title = (x.get('title') or '').strip()
-                if url.startswith('http') and title:
-                    items.append({'title': title, 'url': url})
-            if items:
-                return items
-        except Exception:
-            pass
-        return []
-
     try:
-        from bs4 import BeautifulSoup
-        seen = set()
-        out = []
-        for item in _fetch_web_links():
-            url = item.get('url', '')
-            domain = _re.sub(r'^www\.', '', (url.split('/', 3)[2] if '://' in url else '')).lower()
-            if not domain or domain in seen:
-                continue
-            seen.add(domain)
-            out.append({
-                'title': item.get('title', domain)[:160],
-                'url': url,
-                'domain': domain,
-            })
-            if len(out) >= 6:
-                break
-        if not out:
+        results = _web_search_results(query)[:6]
+        if not results:
             return jsonify({'status': 'ERROR', 'message': 'No results from web search (search engines may be rate-limited).'})
-        return jsonify({'status': 'SUCCESS', 'query': query, 'results': out})
+        return jsonify({'status': 'SUCCESS', 'query': query, 'results': results})
     except Exception as e:
         return jsonify({'status': 'ERROR', 'message': f'Web search failed: {e}'}), 500
+
+
+_AUTOPLAY = {'thread': None, 'state': {}}
+
+
+def _autoplay_default_state():
+    return {'running': False, 'steps': 0, 'max_steps': 0, 'goal': '', 'started': None,
+            'url': None, 'title': None, 'domain': None, 'clicked': False,
+            'fullscreen_clicked': False, 'locked_on': False, 'win': False,
+            'mode': 'vision', 'last_action': None, 'error': None, 'log': []}
+
+
+def _foreground_window_rect():
+    """Rect of the foreground window (the browser right after we open it)."""
+    import ctypes
+    import ctypes.wintypes
+    try:
+        hwnd = ctypes.windll.user32.GetForegroundWindow()
+        rect = ctypes.wintypes.RECT()
+        ctypes.windll.user32.GetWindowRect(hwnd, ctypes.byref(rect))
+        left, top, right, bottom = rect.left, rect.top, rect.right, rect.bottom
+        if right <= left or bottom <= top:
+            return None
+        return {'hwnd': int(hwnd), 'x': int(left), 'y': int(top),
+                'w': int(right - left), 'h': int(bottom - top)}
+    except Exception:
+        return None
+
+
+def _find_window_by_title(substr):
+    """Return the first visible top-level window whose title contains substr."""
+    import ctypes
+    from ctypes import wintypes as _W
+    user32 = ctypes.windll.user32
+    match = {'hwnd': None}
+
+    def _cb(hwnd, lparam):
+        if not user32.IsWindowVisible(hwnd):
+            return True
+        n = user32.GetWindowTextLengthW(hwnd)
+        if not n:
+            return True
+        buf = ctypes.create_unicode_buffer(n + 1)
+        user32.GetWindowTextW(hwnd, buf, n + 1)
+        if substr.lower() in buf.value.lower():
+            match['hwnd'] = int(hwnd)
+            return False
+        return True
+
+    proc = ctypes.WINFUNCTYPE(ctypes.c_bool, _W.HWND, _W.LPARAM)(_cb)
+    user32.EnumWindows(proc, 0)
+    return match['hwnd']
+
+
+def _browser_window_rect(hint=''):
+    """Find a real browser window (title-match on the game first, else the
+    biggest visible browser window) so OCR/clicks target the actual game tab."""
+    import ctypes
+    from ctypes import wintypes as _W
+    user32 = ctypes.windll.user32
+    found = []
+    markers = ('chrome', 'edge', 'firefox', 'brave', 'opera', ' gx', 'arc ',
+               'mozilla firefox', 'chromium')
+    hint_toks = [t for t in re.sub(r'[^a-z0-9 ]', ' ', hint.lower()).split() if len(t) >= 4]
+
+    def _cb(hwnd, lparam):
+        if not user32.IsWindowVisible(hwnd):
+            return True
+        length = user32.GetWindowTextLengthW(hwnd)
+        if not length:
+            return True
+        buf = ctypes.create_unicode_buffer(length + 1)
+        user32.GetWindowTextW(hwnd, buf, length + 1)
+        title = buf.value
+        if not title:
+            return True
+        rect = _W.RECT()
+        user32.GetWindowRect(hwnd, ctypes.byref(rect))
+        w, h = rect.right - rect.left, rect.bottom - rect.top
+        if w < 300 or h < 200:
+            return True
+        found.append({'hwnd': int(hwnd), 'title': title,
+                      'x': int(rect.left), 'y': int(rect.top), 'w': int(w), 'h': int(h)})
+        return True
+
+    proc = ctypes.WINFUNCTYPE(ctypes.c_bool, _W.HWND, _W.LPARAM)(_cb)
+    user32.EnumWindows(proc, 0)
+
+    def _rank(w):
+        t = w['title'].lower()
+        score = sum(5 for tok in hint_toks if tok in t)
+        score += sum(1 for m in markers if m in t)
+        return score
+
+    if not found:
+        return None
+    ranked = sorted(found, key=lambda w: (_rank(w), w['w'] * w['h']), reverse=True)
+    return ranked[0]
+
+
+def _autoplay_region_ocr(rect, max_chars=140):
+    """OCR ONLY the given window region so other open windows can't spoof it."""
+    if not rect:
+        return ''
+    try:
+        import pyautogui
+        import pytesseract
+        img = pyautogui.screenshot(region=(rect['x'], rect['y'], rect['w'], rect['h']))
+        txt = pytesseract.image_to_string(img)
+        return (txt or '')[:max_chars]
+    except Exception:
+        return ''
+
+
+def _autoplay_region_click_label(rect, labels):
+    """Click the first word-boundary label match INSIDE the window region."""
+    import re as _re
+    if not rect:
+        return None
+    try:
+        import pyautogui
+        import pytesseract
+        img = pyautogui.screenshot(region=(rect['x'], rect['y'], rect['w'], rect['h']))
+        data = pytesseract.image_to_data(img, output_type=pytesseract.Output.DICT)
+        for i in range(len(data['text'])):
+            text = data['text'][i].strip()
+            if text == '':
+                continue
+            for label in labels:
+                # Word-boundary match for words; substring/fuzzy match for
+                # short labels and glyphs like ⛶ / ⤢ (fullscreen toggles).
+                if len(label) <= 2:
+                    if label in text:
+                        cx = rect['x'] + int(data['left'][i] + data['width'][i] / 2)
+                        cy = rect['y'] + int(data['top'][i] + data['height'][i] / 2)
+                        pyautogui.click(cx, cy)
+                        return {'label': label, 'text': text, 'x': cx, 'y': cy}
+                else:
+                    if _re.search(r'\b' + _re.escape(label) + r'\b', text, _re.IGNORECASE):
+                        cx = rect['x'] + int(data['left'][i] + data['width'][i] / 2)
+                        cy = rect['y'] + int(data['top'][i] + data['height'][i] / 2)
+                        pyautogui.click(cx, cy)
+                        return {'label': label, 'text': text, 'x': cx, 'y': cy}
+    except Exception:
+        pass
+    return None
+
+
+def _autoplay_decide(vc, goal, state, rect):
+    """Local OCR-driven decision (window-region only): detect boot overlays,
+    win markers, and apply a Dig Dug-style digging policy. No external LLM.
+    Returns (action_str, done_bool)."""
+    if rect:
+        try:
+            import ctypes
+            u32 = ctypes.windll.user32
+            u32.SetWindowPos(rect['hwnd'], -1, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010)
+        except Exception:
+            pass
+    low = _autoplay_region_ocr(rect).lower()
+    state['ocr'] = low[:140]
+    for marker in ('level 2', 'stage 2', 'round 2', 'wave 2', 'congratulations',
+                   'you win', 'winner!', 'next level', 'stage clear'):
+        if marker in low:
+            return 'key:enter', True
+    if any(w in low for w in ('tap to play', 'tap to start', 'click to play',
+                              'click to start', 'press any key', 'insert coin',
+                              'press start', 'play now', 'loading', 'click here',
+                              'tap anywhere', 'game over', 'you died')):
+        return 'key:enter', False
+    step = state['steps']
+    # Dig Dug strategy: dig wide horizontal tunnels while weaving vertically to
+    # dodge rocks, and regularly pump (space) enemies into balloons. The wide
+    # left/right sweep covers most of the level so enemies drop into the maze.
+    pattern = [
+        'left', 'left', 'space', 'left', 'left',
+        'down', 'right', 'right', 'right', 'right', 'space', 'right',
+        'left', 'left', 'space', 'left',
+        'down', 'right', 'right', 'right',
+    ]
+    act = pattern[step % len(pattern)]
+    return f'key:{act}', False
+
+
+_GAME_HUD_MARKERS = ('score', 'round', 'stage', 'level', 'hi-score', 'high score',
+                     'enemies', 'lives', 'ready', 'press enter', 'insert coin',
+                     'dig dug', 'arcade', 'coin', 'start')
+_FOREIGN_MARKERS = ('new session', 'session change', 'opencode', 'jester', 'shell',
+                    'get-content', 'powershell', 'file edit view', 'singularity',
+                    'ask gemini')
+
+
+def _autoplay_decide_gated(vc, goal, state, rect, domain_tok=''):
+    """OCR the game window region; classify whether we are actually reading the
+    game (ocr_ok), and choose the next action. Returns (action, done, ocr_ok).
+    The ocr_ok gate prevents feeding keys/mouse into the wrong window when a
+    terminal/app covers the browser."""
+    if rect:
+        try:
+            import ctypes
+            u32 = ctypes.windll.user32
+            u32.SetWindowPos(rect['hwnd'], -1, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010)
+        except Exception:
+            pass
+    low = _autoplay_region_ocr(rect).lower()
+    state['ocr'] = low[:140]
+    # Win markers — always authoritative.
+    for marker in ('level 2', 'stage 2', 'round 2', 'wave 2', 'congratulations',
+                   'you win', 'winner!', 'next level', 'stage clear'):
+        if marker in low:
+            return 'key:enter', True, True
+    # If we can clearly see the game's own domain/URL text or HUD markers, the
+    # browser is on top and we are reading the game -> playable.
+    foreign = sum(1 for m in _FOREIGN_MARKERS if m in low)
+    gameish = sum(1 for m in _GAME_HUD_MARKERS if m in low)
+    domain_seen = bool(domain_tok and domain_tok in low)
+    # Lock-on: once the game page is confirmed (domain or HUD), a subsequent
+    # empty/low-text OCR is almost always the game going fullscreen OR the
+    # game canvas itself, not a foreign window. Only give up when foreign
+    # terminal text dominates repeatedly.
+    locked = bool(state.get('locked_on'))
+    if not locked and (domain_seen or gameish >= 2):
+        state['locked_on'] = True
+        locked = True
+    if locked and foreign > gameish and foreign >= 2:
+        # clear lock so a genuinely-displaced window can re-grab
+        state['locked_on'] = False
+        locked = False
+    if locked or domain_seen or gameish >= 2:
+        # Boot / overlay / continue states first.
+        if any(w in low for w in ('tap to play', 'tap to start', 'click to play',
+                                  'click to start', 'press any key', 'insert coin',
+                                  'press start', 'play now', 'loading', 'click here',
+                                  'tap anywhere', 'game over', 'you died', 'press enter')):
+            return 'key:enter', False, True
+        step = state['steps']
+        pattern = [
+            'left', 'left', 'space', 'left', 'left',
+            'down', 'right', 'right', 'right', 'right', 'space', 'right',
+            'left', 'left', 'space', 'left',
+            'down', 'right', 'right', 'right',
+        ]
+        return f'key:{pattern[step % len(pattern)]}', False, True
+    # Otherwise we are likely reading the wrong window → not game HUD.
+    return 'key:none', False, False
+
+
+def _autoplay_execute(execute_func, action):
+    if action.startswith('key:'):
+        key = action.split(':', 1)[1]
+        if key == 'none':
+            return
+        execute_func('press', {'key': key})
+    elif action.startswith('mouse:'):
+        try:
+            x, y = action.split(':', 1)[1].split(',')
+            execute_func('click', {'x': int(float(x)), 'y': int(float(y))})
+        except Exception:
+            execute_func('click', {})
+
+
+def _autoplay_worker_os(query, max_steps, goal):
+    state = _AUTOPLAY['state']
+    state.update(_autoplay_default_state())
+    state.update({'running': True, 'max_steps': max_steps, 'goal': goal,
+                  'started': time.strftime('%H:%M:%S')})
+    log = state['log']
+    log.append(f'Autopilot started: "{query}" | goal: {goal}')
+    try:
+        import server_tools
+        ranked = _web_search_results(query)
+        if not ranked:
+            state['error'] = 'No free source found for the query.'
+            state['running'] = False
+            return
+        best = ranked[0]
+        state.update({'url': best['url'], 'title': best['title'], 'domain': best['domain']})
+        log.append(f'Best source: {best["title"]} -> {best["url"]}')
+        # Open the game in a FRESH fullscreen Chrome window so it is the single
+        # biggest window on screen (interfering apps get minimized below it).
+        try:
+            import subprocess
+            chrome_paths = [
+                r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+                r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+                r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+                r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+            ]
+            browser_exe = next((p for p in chrome_paths if os.path.exists(p)), None)
+            if browser_exe:
+                subprocess.Popen([browser_exe, '--start-fullscreen', '--new-window', best['url']],
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                log.append(f'[SUCCESS] Opened {best["url"]} in fullscreen fresh browser window')
+            else:
+                log.append(server_tools.open_app_or_url(best['url']))
+        except Exception as e:
+            log.append(f'Open failed: {e}')
+            try:
+                log.append(server_tools.open_app_or_url(best['url']))
+            except Exception as e2:
+                log.append(f'Fallback open failed: {e2}')
+        time.sleep(7)
+        from vision_core import vision_core as vc
+        from computer_use import execute_computer_action
+        import ctypes as _ct
+        u32 = _ct.windll.user32
+        # Minimize the apps that keep stealing the foreground (the JESTER
+        # Electron shell and the terminal), so only the browser remains on top.
+        for _t in ('JESTER', 'Opencode', 'OpenCode', 'terminal', 'Windows PowerShell', 'Windows Terminal'):
+            h = _find_window_by_title(_t)
+            if h:
+                try:
+                    u32.ShowWindow(h, 6)  # SW_MINIMIZE
+                    log.append(f'Minimized interfering window "{_t}"')
+                except Exception:
+                    pass
+        time.sleep(1)
+        # Acquire (and keep re-acquiring) the real browser window by title.
+        rect = _browser_window_rect(f'{best.get("title")} {best.get("domain")}')
+        state['win_rect'] = rect
+        log.append(f'Game window: {rect and rect.get("title")}')
+
+        def _raise():
+            nonlocal rect
+            rect = _browser_window_rect(f'{best.get("title")} {best.get("domain")}')
+            state['win_rect'] = rect
+            if not rect:
+                return None
+            try:
+                u32.ShowWindow(rect['hwnd'], 9)  # SW_RESTORE
+                u32.SetWindowPos(rect['hwnd'], -1, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010)
+                u32.SetWindowPos(rect['hwnd'], -2, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010)
+                u32.BringWindowToTop(rect['hwnd'])
+                u32.SetForegroundWindow(rect['hwnd'])
+            except Exception:
+                pass
+            return rect
+
+        _raise()
+        time.sleep(1)
+        # Center-click the emulator canvas + press enter — most retro sites boot
+        # straight from a center tap.
+        try:
+            import pyautogui
+            if rect:
+                execute_computer_action('click', {'x': rect['x'] + rect['w'] // 2, 'y': rect['y'] + rect['h'] // 2})
+            else:
+                _sw, _sh = pyautogui.size()
+                execute_computer_action('click', {'x': int(_sw / 2), 'y': int(_sh / 2)})
+            time.sleep(1)
+            execute_computer_action('press', {'key': 'enter'})
+        except Exception as e:
+            log.append(f'Center-start failed: {e}')
+        time.sleep(2)
+        # ---- BOOT SEQUENCE -------------------------------------------------
+        # Go fullscreen in the browser (F11) so the game canvas fills the screen
+        # and OCR/click coordinates are stable, then find & click the in-game
+        # Play button, then any fullscreen toggle control.
+        _raise()
+        try:
+            execute_computer_action('press', {'key': 'f11'})
+            log.append('Pressed F11 (browser fullscreen)')
+        except Exception as e:
+            log.append(f'F11 failed: {e}')
+        time.sleep(2)
+        _raise()
+        hit = _autoplay_region_click_label(rect, ('Play', 'Start', 'Launch', 'Click to Start', 'Press Enter', 'Click Here', 'Tap to Start', 'Play Game'))
+        if hit:
+            state['clicked'] = True
+            state['clicked_label'] = hit.get('label')
+            log.append(f'CLICKED PLAY BUTTON "{hit.get("label")}": {hit.get("text")} at {hit.get("x")},{hit.get("y")}')
+        else:
+            # Many emulator pages show a big click-to-play thumbnail with no
+            # labeled text; click the visual center of the page as a fallback.
+            log.append("No labeled Play button — center-clicking the game area.")
+            try:
+                if rect:
+                    execute_computer_action('click', {'x': rect['x'] + rect['w'] // 2,
+                                                      'y': rect['y'] + int(rect['h'] * 0.55)})
+                    state['clicked'] = True
+                else:
+                    _sw, _sh = pyautogui.size()
+                    execute_computer_action('click', {'x': int(_sw / 2), 'y': int(_sh / 2)})
+                    state['clicked'] = True
+            except Exception as e:
+                log.append(f'Center play fallback failed: {e}')
+        time.sleep(2)
+        # Click any fullscreen toggle (⛶/⤢ glyphs or 'Fullscreen'/'Maximize' text).
+        _raise()
+        fs = _autoplay_region_click_label(rect, ('Fullscreen', 'Full Screen', 'Maximize', 'Expand', '⛶', '⤢', '⛶'))
+        if fs:
+            state['fullscreen_clicked'] = True
+            log.append(f'CLICKED FULLSCREEN CONTROL "{fs.get("label")}": {fs.get("text")}')
+        else:
+            log.append('No fullscreen button found (using F11/browser fullscreen).')
+        time.sleep(2)
+        win = False
+        focus_stop = {'dead': False}
+
+        def _keep_focus():
+            while not focus_stop['dead']:
+                try:
+                    if rect and u32.IsWindowVisible(rect['hwnd']):
+                        u32.SetWindowPos(rect['hwnd'], -1, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010)
+                        if u32.GetForegroundWindow() != rect['hwnd']:
+                            u32.SetForegroundWindow(rect['hwnd'])
+                            u32.BringWindowToTop(rect['hwnd'])
+                except Exception:
+                    pass
+                time.sleep(0.2)
+            return True
+
+        focus_thread = None
+        if rect:
+            import threading as _th
+            focus_thread = _th.Thread(target=_keep_focus, daemon=True)
+            focus_thread.start()
+
+        domain_tok = re.sub(r'^www\.', '', (best.get('domain') or '').lower())
+        gate_steps = 0
+        while state['steps'] < max_steps and not win:
+            state['steps'] += 1
+            _raise()
+            action, done, ocr_ok = _autoplay_decide_gated(vc, goal, state, rect, domain_tok)
+            state['last_action'] = action
+            state['mode'] = 'ocr-smart'
+            if done:
+                state['win'] = True
+                log.append('LEVEL CLEARED / goal reached.')
+                break
+            if not ocr_ok:
+                # We are NOT reading the game window (foreign text / no HUD):
+                # re-raise the browser and keep trying Enter to boot, but don't
+                # flood keys into the wrong window. Bounded so we don't stall.
+                gate_steps += 1
+                log.append(f'step {state["steps"]}: not game HUD ({gate_steps}) — re-raising window')
+                if gate_steps <= 6:
+                    try:
+                        execute_computer_action('press', {'key': 'enter'})
+                    except Exception:
+                        pass
+                    time.sleep(1.2)
+                    continue
+                if gate_steps > 12:
+                    log.append('Giving up: could not bring game into focus.')
+                    state['win'] = False
+                    break
+                continue
+            gate_steps = 0
+            log.append(f'step {state["steps"]}: {action}')
+            try:
+                _autoplay_execute(execute_computer_action, action)
+            except Exception as e:
+                log.append(f'step {state["steps"]} exec error: {e}')
+            # ArcadeSpot and most emulator sites are mouse-click-to-start: retry
+            # clicking a Play/Start button in the window while we're booting so a
+            # mouse-only boot screen actually starts the emulator.
+            if not state.get('clicked') and state['steps'] <= 18:
+                _raise()
+                hit = _autoplay_region_click_label(rect, ('Play', 'Start', 'Launch', 'Click to Start', 'Press Enter', 'Click Here', 'Tap to Start'))
+                if hit:
+                    state['clicked'] = True
+                    state['clicked_label'] = hit.get('label')
+                    log.append(f'Bootstrap-clicked "{hit.get("label")}": {hit.get("text")}')
+            time.sleep(0.85)
+        focus_stop['dead'] = True
+        if focus_thread:
+            focus_thread.join(timeout=1)
+        state['running'] = False
+        log.append(f'Autopilot finished at step {state["steps"]} (win={state["win"]}).')
+    except Exception as e:
+        state['error'] = str(e)
+        state['running'] = False
+        try:
+            log.append(f'Autopilot error: {e}')
+        except Exception:
+            pass
+    finally:
+        if len(log) > 60:
+            state['log'] = log[-60:]
+
+
+# ---------------------------------------------------------------------------
+# Node/Playwright web-agent path (preferred): drives the game inside its own
+# headed Chromium via CDP-injected keys + real vision (OCR of the emulator
+# canvas region). No OS mouse, no foreground fights.
+# ---------------------------------------------------------------------------
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_WEB_AGENT = os.path.join(_REPO_ROOT, 'web_agent.mjs')
+_LEARN_GAME = os.path.join(_REPO_ROOT, 'learn_game.py')
+_AGENT_STATE = os.path.join(os.environ.get('TEMP', 'C:\\Users\\trist\\AppData\\Local\\Temp'),
+                            'opencode', 'web_agent_state.json')
+
+_GAME_ALIASES = [
+    (r'\bbubble\s*bobble\b', 'bubble-bobble'),
+    (r'\bdig\s*dug\b', 'dig-dug'),
+    (r'\bgalaga\b', 'galaga'),
+    (r'\smario\b', 'mario'),
+    (r'\bpac[-\s]*man\b', 'pac-man'),
+]
+
+
+def _pick_game_registry(query):
+    q = query.lower()
+    for pat, reg in _GAME_ALIASES:
+        if re.search(pat, q):
+            return reg, {'dig-dug': 'https://arcadespot.com/game/dig-dug/',
+                         'pac-man': 'https://arcadespot.com/game/pac-man/',
+                         'galaga': 'https://arcadespot.com/game/galaga/',
+                         'mario': 'https://neoseeker.com/',
+                         'bubble-bobble': 'https://arcadespot.com/game/bubble-bobble/'}.get(reg)
+    return None, None
+
+
+def _node_agent_available():
+    internals = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..')
+    node_modules = os.path.join(internals, 'node_modules', 'playwright')
+    if not (os.path.exists(_WEB_AGENT) and os.path.isdir(node_modules)):
+        return False
+    node_exe = shutil.which('node') or shutil.which('node.exe')
+    return bool(node_exe)
+
+
+def _learn_game_hints(query):
+    try:
+        venv = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.venv', 'Scripts', 'python.exe')
+        if not os.path.exists(venv):
+            return {}
+        res = subprocess.run([venv, _LEARN_GAME, query], capture_output=True, text=True, timeout=90)
+        if res.returncode == 0:
+            try:
+                data = json.loads(res.stdout.strip().splitlines()[-1])
+                hints = data.get('hints') or {}
+                h = {}
+                if hints.get('start_keys'):
+                    h['startKeysHint'] = list(dict.fromkeys(hints['start_keys']))
+                if hints.get('strategy'):
+                    h['strategyHint'] = hints['strategy']
+                if hints.get('win'):
+                    h['winMarkersHint'] = [hints['win']]
+                if hints.get('note'):
+                    h['note'] = hints['note']
+                return h, data
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return {}, None
+
+
+def _autoplay_worker_node(query, max_steps, goal):
+    """Spawns web_agent.mjs (game mode) and mirrors its state file into
+    _AUTOPLAY['state'] so the existing status endpoint keeps working."""
+    state = _AUTOPLAY['state']
+    state.update(_autoplay_default_state())
+    state.update({'running': True, 'max_steps': max_steps, 'goal': goal,
+                  'started': time.strftime('%H:%M:%S'), 'mode': 'node', 'driver': 'web-agent'})
+    log = state['log']
+    log.append(f'Autopilot (Playwright) started: "{query}" | goal: {goal}')
+    try:
+        ranked = _web_search_results(query)
+        if not ranked:
+            state['error'] = 'No free source found for the query.'
+            state['running'] = False
+            return
+        best = ranked[0]
+        reg, known_url = _pick_game_registry(query)
+        url = best.get('url') or known_url
+        if not url:
+            url = known_url
+        states = [_ for _ in ranked if 'arcadespot' in _.get('url', '')]
+        if states:
+            url = states[0]['url']
+        state.update({'url': url, 'title': best.get('title'), 'domain': best.get('domain'),
+                      'registry': reg or 'generic'})
+        log.append(f'Best source: {best.get("title")} -> {url} (registry={reg or "generic"})')
+
+        hints, learn_data = _learn_game_hints(query)
+        if hints:
+            log.append(f'Learned hints: {hints}')
+        elif learn_data:
+            log.append(f'Learned from {len(learn_data.get("sources", []))} sources (no strong hints)')
+
+        cfg = {
+            'mode': 'game',
+            'device': 'web-agent',
+            'goal': goal,
+            'maxSteps': max_steps,
+            'game': {
+                'url': url,
+                'registry': reg,
+                'strategyHint': hints.get('strategyHint'),
+                'startKeysHint': hints.get('startKeysHint'),
+                'winMarkersHint': hints.get('winMarkersHint'),
+            },
+            'stateFile': _AGENT_STATE,
+            'headless': False,
+        }
+        cfg_path = os.path.join(os.path.dirname(_AGENT_STATE), 'web_agent_cfg.json')
+        with open(cfg_path, 'w') as f:
+            json.dump(cfg, f)
+
+        log.append('Launching web_agent.mjs...')
+        node_exe = shutil.which('node') or shutil.which('node.exe')
+        proc = subprocess.Popen([node_exe, _WEB_AGENT, cfg_path],
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        log.append(f'web_agent PID {proc.pid}')
+        last_ts = 0.0
+        while proc.poll() is None and state['running']:
+            time.sleep(1.5)
+            try:
+                with open(_AGENT_STATE, 'r') as f:
+                    agent = json.load(f)
+                ts = agent.get('ts', 0)
+                if ts >= last_ts:
+                    last_ts = ts
+                    state['steps'] = agent.get('steps', state.get('steps', 0))
+                    state['win'] = bool(agent.get('win'))
+                    state['dead'] = bool(agent.get('dead'))
+                    state['started'] = agent.get('started', state.get('started'))
+                    state['round'] = agent.get('round')
+                    state['win_rect'] = {'title': agent.get('url')}
+                    last_ocr = agent.get('lastOcr') or ''
+                    state['last_action'] = last_ocr or state.get('last_action')
+                    alog = agent.get('log') or []
+                    if alog and (not state.get('agent_log') or state.get('agent_log') != alog):
+                        state['agent_log'] = alog
+                        log.append(f'[agent step {agent.get("steps")}] {alog[-1]}')
+            except Exception:
+                pass
+            if proc.poll() is not None:
+                state['running'] = bool(proc.poll() is None)
+        # final poll
+        try:
+            with open(_AGENT_STATE, 'r') as f:
+                agent = json.load(f)
+            state['steps'] = agent.get('steps', state.get('steps', 0))
+            state['win'] = bool(agent.get('win'))
+            state['dead'] = bool(agent.get('dead'))
+            state['round'] = agent.get('round')
+            state['last_action'] = (agent.get('lastOcr') or '').strip()
+            if agent.get('error'):
+                state['error'] = agent['error']
+        except Exception:
+            pass
+        state['running'] = False
+        log.append(f'Autopilot finished at step {state.get("steps", 0)} (win={state.get("win")}).')
+    except Exception as e:
+        state['error'] = str(e)
+        state['running'] = False
+        try:
+            log.append(f'Autopilot error: {e}')
+        except Exception:
+            pass
+    finally:
+        if len(log) > 80:
+            state['log'] = log[-80:]
+
+
+def _autoplay_worker(query, max_steps, goal):
+    """Dispatcher: prefer the Playwright web-agent (real vision, no mouse);
+    fall back to the OS mouse/OCR loop when Node/Playwright is unavailable."""
+    try:
+        if _node_agent_available():
+            _autoplay_worker_node(query, max_steps, goal)
+            return
+    except Exception as e:
+        log = _AUTOPLAY['state'].get('log') or []
+        log.append(f'Node autopilot unavailable ({e}); falling back to OS mouse loop.')
+    _autoplay_worker_os(query, max_steps, goal)
+
+
+@app.route('/api/browser/task', methods=['POST'])
+def api_browser_task():
+    """Run a generic browser task (navigate, click by text, type, read, verify)
+    inside a Playwright Chromium. The task script is JSON: {url, actions:[...]}.
+    Returns immediately; poll GET /api/browser/task/status for progress."""
+    import threading
+    data = request.json or {}
+    actions = data.get('actions') or []
+    url = (data.get('url') or '').strip()
+    if not actions and not url:
+        return jsonify({'status': 'ERROR', 'message': 'Provide url and/or actions.'}), 400
+    if _BROWSER_TASKS.get('thread') and _BROWSER_TASKS['thread'].is_alive():
+        return jsonify({'status': 'RUNNING', 'message': 'Browser task already in progress.'})
+    t = threading.Thread(target=_browser_task_worker, args=(url, actions, data), daemon=True)
+    _BROWSER_TASKS['thread'] = t
+    t.start()
+    return jsonify({'status': 'STARTED', 'url': url, 'actions': len(actions)})
+
+
+_BROWSER_TASKS = {'thread': None, 'state': {}}
+
+
+def _browser_task_worker(url, actions, data):
+    state = _BROWSER_TASKS['state']
+    state.clear()
+    state.update({'running': True, 'url': url, 'actions': len(actions),
+                  'goal': data.get('goal') or '', 'log': [], 'ts': 0})
+    log = state['log']
+    log.append(f'Browser task started: {url or "(navigate only)"} goal={state["goal"]}')
+    try:
+        if not _node_agent_available():
+            state['error'] = 'Node/Playwright unavailable.'
+            state['running'] = False
+            return
+        cfg = {'mode': 'task', 'task': {'url': url, 'actions': actions,
+                                        'maxSteps': data.get('max_steps', 40)},
+               'stateFile': _AGENT_STATE, 'headless': data.get('headless', False),
+               'goal': state['goal']}
+        cfg_path = os.path.join(os.path.dirname(_AGENT_STATE), 'web_agent_cfg.json')
+        with open(cfg_path, 'w') as f:
+            json.dump(cfg, f)
+        node_exe = shutil.which('node') or shutil.which('node.exe')
+        proc = subprocess.Popen([node_exe, _WEB_AGENT, cfg_path],
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        last_ts = 0.0
+        while proc.poll() is None:
+            time.sleep(1.5)
+            try:
+                with open(_AGENT_STATE, 'r') as f:
+                    agent = json.load(f)
+                ts = agent.get('ts', 0)
+                if ts >= last_ts:
+                    last_ts = ts
+                    state['steps'] = agent.get('steps', state.get('steps', 0))
+                    alog = agent.get('log') or []
+                    if alog and state.get('agent_log') != alog:
+                        state['agent_log'] = alog
+                        log.append(f'[agent] {alog[-1]}')
+                    if agent.get('error'):
+                        state['error'] = agent['error']
+            except Exception:
+                pass
+        try:
+            with open(_AGENT_STATE, 'r') as f:
+                agent = json.load(f)
+            state['steps'] = agent.get('steps', 0)
+            if agent.get('error'):
+                state['error'] = agent['error']
+        except Exception:
+            pass
+        state['running'] = False
+    except Exception as e:
+        state['error'] = str(e)
+        state['running'] = False
+    finally:
+        state['ts'] = time.time()
+        if len(log) > 80:
+            state['log'] = log[-80:]
+
+
+@app.route('/api/browser/task/status', methods=['GET'])
+def api_browser_task_status():
+    state = dict(_BROWSER_TASKS.get('state') or {})
+    thread = _BROWSER_TASKS.get('thread')
+    state['thread_alive'] = bool(thread and thread.is_alive())
+    return jsonify({'status': 'SUCCESS', 'task': state})
+
+
+@app.route('/api/play/autoplay', methods=['POST'])
+def api_play_autoplay():
+    """Start a background autopilot: open the best free source of a game and
+    play it with the real mouse/keyboard until the goal (e.g. win level 1) is
+    reached. Progress is pollable via GET /api/play/autoplay/status."""
+    import threading
+    data = request.json or {}
+    query = (data.get('query') or '').strip()
+    if not query:
+        return jsonify({'status': 'ERROR', 'message': 'Empty query'}), 400
+    thread = _AUTOPLAY.get('thread')
+    if thread and thread.is_alive():
+        return jsonify({'status': 'RUNNING', 'message': 'Autopilot already in progress.'})
+    max_steps = int(data.get('max_steps') or 90)
+    goal = (data.get('goal') or 'play and win the first level').strip()
+    t = threading.Thread(target=_autoplay_worker, args=(query, max_steps, goal), daemon=True)
+    _AUTOPLAY['thread'] = t
+    t.start()
+    return jsonify({'status': 'STARTED', 'query': query, 'goal': goal, 'max_steps': max_steps})
+
+
+@app.route('/api/play/autoplay/status', methods=['GET'])
+def api_play_autoplay_status():
+    state = dict(_AUTOPLAY.get('state') or {})
+    thread = _AUTOPLAY.get('thread')
+    state['thread_alive'] = bool(thread and thread.is_alive())
+    return jsonify({'status': 'SUCCESS', 'autoplay': state})
+
+
+@app.route('/api/play/escort', methods=['POST'])
+def api_play_escort():
+    """Open the single BEST source for a play/search request in the real OS
+    browser, then DRIVE THE MOUSE to start it (OCR-click Play/Start/Launch).
+    dry_run=true skips the browser open + clicks so callers can preview."""
+    data = request.json or {}
+    query = (data.get('query') or '').strip()
+    dry_run = bool(data.get('dry_run', False))
+    if not query:
+        return jsonify({'status': 'ERROR', 'message': 'Empty query'}), 400
+    try:
+        ranked = _web_search_results(query)
+        if not ranked:
+            return jsonify({'status': 'ERROR', 'message': 'No results found for query.'}), 404
+        best = ranked[0]
+        result = {k: best.get(k) for k in ('title', 'url', 'domain')}
+        if dry_run:
+            result.update({'dry_run': True, 'opened': False, 'clicked': False,
+                           'note': 'Dry-run completed (no browser/mouse touched).'})
+            return jsonify({'status': 'SUCCESS', **result})
+        opened = False
+        try:
+            import server_tools
+            result['open_note'] = server_tools.open_app_or_url(best['url'])
+            opened = True
+        except Exception as e:
+            result['open_note'] = f'Open failed: {e}'
+        result['opened'] = opened
+        clicked_label = None
+        clicked = False
+        if opened:
+            time.sleep(4)
+            try:
+                from vision_core import vision_core as vc
+                for label in ('Play', 'Play Game', 'Play Now', 'Start', 'Launch', 'Click to Start', 'Press Enter'):
+                    try:
+                        res = vc.find_and_click_text(label)
+                        if res and res.get('status') == 'success':
+                            clicked_label = label
+                            clicked = True
+                            break
+                    except Exception:
+                        continue
+            except Exception as e:
+                result['click_note'] = f'Screen drive unavailable: {e}'
+        result['clicked'] = clicked
+        result['clicked_label'] = clicked_label
+        result['note'] = ('Opened and mouse-clicked PLAY/START.' if clicked
+                          else 'Opened in browser; no PLAY button OCR-clicked. Click OPEN IN BROWSER or tell me to drive the screen.')
+        return jsonify({'status': 'SUCCESS', **result})
+    except Exception as e:
+        return jsonify({'status': 'ERROR', 'message': f'Play escort failed: {e}'}), 500
 
 
 @app.route('/api/sys/docker_status', methods=['GET'])

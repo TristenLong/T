@@ -117,30 +117,32 @@ class VisionCore:
             return {"status": "error", "message": f"Webcam analysis failed: {str(e)}"}
 
     def find_and_click_text(self, target_text):
-        """Finds text on the screen and clicks it using real Tesseract OCR."""
+        """Finds text on the screen and clicks it using real Tesseract OCR.
+        Matches whole words (word boundaries) so 'Play' never hits 'Player'."""
+        import re as _re
         print(f"[VISION CORE] Scanning screen for '{target_text}' to click...")
         screenshot = pyautogui.screenshot()
-        
+
         try:
             # Use Tesseract to get detailed bounding box data
             data = pytesseract.image_to_data(screenshot, output_type=pytesseract.Output.DICT)
-            
+
             for i in range(len(data['text'])):
                 text = data['text'][i].strip()
-                if target_text.lower() in text.lower() and text != "":
+                if text != "" and _re.search(r'\b' + _re.escape(target_text) + r'\b', text, _re.IGNORECASE):
                     # Found a match, calculate the center of the bounding box
                     x = data['left'][i]
                     y = data['top'][i]
                     w = data['width'][i]
                     h = data['height'][i]
-                    
+
                     center_x = x + (w / 2)
                     center_y = y + (h / 2)
-                    
+
                     print(f"[VISION CORE] Match found at ({center_x}, {center_y}). Executing click.")
                     pyautogui.click(center_x, center_y)
                     return {"status": "success", "message": f"Clicked '{text}' at ({center_x}, {center_y})"}
-            
+
             return {"status": "failed", "message": f"Could not find '{target_text}' on screen."}
         except Exception as e:
             return {"status": "error", "message": f"OCR failed: {str(e)}"}

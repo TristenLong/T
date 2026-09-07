@@ -938,11 +938,144 @@ function App() {
   // Turn a "find X online / search for X / open some URL" directive into an
   // actual action: query the live web search and show the real result links in
   // the thread; fall back to opening the browser search when search is blocked.
+  const stripDirective = (raw) =>
+    (String(raw || '').replace(/^(?:please\s+)?(?:can\s+you\s+)?(?:find|search(?:\s+(?:for|up))?|look\s+up|lookup|google|browse|open|download|watch|play|buy|get|show\s+me)\s+(?:a|an|the|me|us)?\s*/i, '') || String(raw || '')).trim();
+
+  const webIntentRe = /(?:find|search|look\s*up|lookup|google|browse|open|download|watch|play|buy|get)\b[^\n]*\b(?:online|free|web|website|site|url|link|browser|share|game|movie|video)\b|https?:\/\/\S+/i;
+
+  // "Play it with my screen", "open dig dug in my browser", "use the mouse" ->
+  // auto-pick the BEST source, open it for real, and drive the mouse to start.
+  // Autopilot tokens (till/win/beat/level/autopilot/pilot) route to the web-agent
+  // driver instead so it can play the game and watch for a LEVEL CLEAR.
+  const escortRe = new RegExp([
+    String.raw`\b(?:open|launch|load|start)\b[^\n]{0,60}\b(?:browser|screen|it|now|game)\b`,
+    String.raw`\bplay\b`,
+    String.raw`with\s+my\s+screen`,
+    String.raw`use\s+(?:your\s+)?(?:the\s+)?mouse`,
+    String.raw`click\s+play`,
+    String.raw`actually\s+open`,
+    String.raw`\bautopilot\b`,
+    String.raw`\bautoplay\b`,
+    String.raw`\bpilot\b`,
+    String.raw`\btill\b`,
+    String.raw`\b(when\s+)?(it\s+)?win(?:s|ning)?\b`,
+    String.raw`\bbeat\b`,
+    String.raw`(?:level|round|stage)\s+\d+\b`,
+  ].join('|'), 'i');
+
+  // Open the single best source in the real OS browser, then OCR-click the
+  // Play/Start button so "play <game> with my screen" actually launches it.
+  const manifestPlayEscortFromRoundtable = async (topic) => {
+    const raw = String(topic || '').trim().replace(/[.!?]+$/, '');
+    const query = stripDirective(raw);
+    const baseTurn = { bot_id: 'web', bot_name: 'WEB DRIVE', role: 'PLAY ESCORT', color: '#FF4500', avatar: 'MousePointer', timestamp: new Date().toLocaleTimeString() };
+    try { await armBackendWithPuter(); } catch (e) { /* best effort */ }
+    let payload = {};
+    try {
+      const res = await fetch('/api/play/escort', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query })
+      });
+      payload = await res.json();
+    } catch (e) {
+      payload = { status: 'ERROR', message: String(e && e.message ? e.message : e) };
+    }
+    const ok = payload.status === 'SUCCESS' && payload.url;
+    let content;
+    if (ok) {
+      content = `[WEB DRIVE] Best source: ${payload.title}\n${payload.url}\nMouse: ${payload.clicked ? `clicked "${payload.clicked_label}" (real click)` : 'opened — no Play button OCR-clicked'}`;
+    } else {
+      content = `[WEB DRIVE] ${(payload.message || 'escort could not run').slice(0, 200)}`;
+    }
+    setSwarmTurns(prev => [...prev, { ...baseTurn, text: content, content, link: ok ? payload.url : null }]);
+    setResponse(prev => `${prev}\n\n${ok ? `[WEB DRIVE] Opened best source:\n${payload.url}\nClick status: ${payload.clicked ? `CLICKED "${payload.clicked_label}"` : 'no button click detected'}` : `[WEB DRIVE] ${(payload.message || '').slice(0, 160)}`}`);
+    speak(ok ? (payload.clicked ? 'Opened the best source and clicked play for you, sir.' : 'Opened the best source in your browser, sir.') : 'I could not pull up a source for that, sir.', 'jester');
+    observe('WEB', `Play escort for "${query}" -> ${ok ? payload.url : (payload.message || 'failed')}`);
+    remember('user', `[PLAY ESCORT] ${query}`);
+    remember('model', `[WEB DRIVE] ${ok ? `${payload.title} -> ${payload.url} clicked=${payload.clicked}` : (payload.message || 'failed')}`);
+  };
+
+  // "play dig dug till you win / beat level 1 / autopilot" -> POST the web-agent
+  // autopilot (/api/play/autoplay) which drives the game in its own Chromium and
+  // watches OCR for ROUND 2 -> level clear, then poll the status route.
+  const manifestAutopilotFromRoundtable = async (content = '', topic) => {
+    const raw = String(topic || content || '').trim().replace(/[.!?]+$/, '');
+    const query = stripDirective(raw);
+    const goalMatch = (raw.match(/(?:till|until|when)\s+(?:(?:it|you|we)?\s*)?(?:win|beats?|clears?|finish(?:es)?)\s*(?:(?:level|round|stage)\s*\d+|the\s+game|it)?\b/i)
+      || raw.match(/beat\s+((?:level|round|stage)\s*\d+|it|the\s+game)/i)
+      || raw.match(/win(?:\s+(?:level|round|stage))?\s*\d+\b/i)
+      || [null, 'win the first level'])[1];
+    const goal = goalMatch || 'play and win the first level';
+    const roundToken = (raw.match(/round\s*(\d+)\b/i) || raw.match(/level\s*(\d+)\b/i) || raw.match(/stage\s*(\d+)\b/i) || [null, null])[1];
+    const maxSteps = parseInt((raw.match(/steps?\s*[:=]?\s*(\d+)\b/i) || [null, '260'])[1], 10);
+    const baseTurn = { bot_id: 'web', bot_name: 'WEB PILOT', role: 'AUTOPILOT', color: '#FF8C00', avatar: 'Gamepad2', timestamp: new Date().toLocaleTimeString() };
+    try { await armBackendWithPuter(); } catch (e) { /* best effort */ }
+    let payload;
+    try {
+      const res = await fetch('/api/play/autoplay', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query, max_steps: maxSteps, goal })
+      });
+      payload = await res.json();
+    } catch (e) {
+      payload = { status: 'ERROR', message: String(e && e.message ? e.message : e) };
+    }
+    const started = payload.status === 'STARTED';
+    const content2 = started
+      ? `[WEB PILOT] Autopilot engaged: "${query}"\nGoal: ${goal}${roundToken ? ` (target: round ${roundToken})` : ''}\nMax steps: ${maxSteps} — polling progress...`
+      : `[WEB PILOT] ${(payload.message || 'autopilot could not start').slice(0, 200)}`;
+    setSwarmTurns(prev => [...prev, { ...baseTurn, text: content2, content: content2, link: null }]);
+    setResponse(prev => `${prev}\n\n${content2}`);
+    speak(started ? `Autopilot engaged, sir. I will keep playing and watch for the win.` : 'I could not start the autopilot, sir.', 'jester');
+    observe('WEB', `Autopilot "${query}" -> ${started ? `goal=${goal} steps=${maxSteps}` : (payload.message || 'failed')}`);
+    remember('user', `[AUTOPILOT] ${query}`);
+    if (started) {
+      // Poll status for the user until the driver reports win/stop.
+      setStatus('AUTOPILOT_RUNNING...');
+      try {
+        for (let i = 0; i < 120; i++) {
+          await new Promise(r => setTimeout(r, 2500));
+          let st = {};
+          try { st = (await (await fetch('/api/play/autoplay/status')).json()).autoplay || {}; } catch (e) { break; }
+          const win = !!st.win;
+          const done = !st.thread_alive && !st.running;
+          if (st.error) {
+            setSwarmTurns(prev => [...prev, { ...baseTurn, text: `[WEB PILOT] Error: ${(st.error || '').slice(0, 160)}` }]);
+            break;
+          }
+          if (i % 8 === 0 && st.last_action) {
+            setStatus(`AUTOPILOT step ${st.steps}...`);
+          }
+          if (win) {
+            setStatus('AUTOPILOT_WIN');
+            setSwarmTurns(prev => [...prev, {
+              ...baseTurn, text: `[WEB PILOT] LEVEL CLEARED at step ${st.steps}${st.round ? ` (round ${st.round})` : ''}`
+            }]);
+            setResponse(prev => `${prev}\n\n[WEB PILOT] LEVEL CLEARED at step ${st.steps}${st.round ? ` (round ${st.round})` : ''}.`);
+            speak('Level cleared, sir. I won.', 'jester');
+            break;
+          }
+          if (done) {
+            setStatus('AUTOPILOT_DONE');
+            setSwarmTurns(prev => [...prev, { ...baseTurn,
+              text: `[WEB PILOT] Finished at step ${st.steps}: ${st.dead ? 'game over detected' : 'no level clear yet'}${st.attempts ? ` (${st.attempts} attempts)` : ''}` }]);
+            setResponse(prev => `${prev}\n\n[WEB PILOT] Finished at step ${st.steps}${st.dead ? ' (game over)' : ' (no level clear yet)'}.`);
+            break;
+          }
+        }
+      } catch (e) { /* poll dropped */ }
+      setStatus('LISTENING');
+    }
+    remember('model', `[WEB PILOT] ${started ? `engaged ${query} goal=${goal}` : (payload.message || 'failed')}`);
+  };
+
   const manifestWebLookupFromRoundtable = async (topic) => {
     const raw = String(topic || '').trim().replace(/[.!?]+$/, '');
     // Engines keyword-skew on leading directive verbs ("find digdug game" ->
     // "find your phone" junk), so strip the directive before querying.
-    const query = (raw.replace(/^(?:please\s+)?(?:can\s+you\s+)?(?:find|search(?:\s+(?:for|up))?|look\s+up|lookup|google|browse|open|download|watch|play|buy|get|show\s+me)\s+(?:a|an|the|me|us)?\s*/i, '') || raw).trim();
+    const query = stripDirective(raw);
     const baseTurn = { bot_id: 'web', bot_name: 'WEB SCOUT', role: 'WEB LOOKUP', color: '#00CED1', avatar: 'Globe', timestamp: new Date().toLocaleTimeString() };
     // A bare/pasted URL (e.g. a shared link) must OPEN in the system browser --
     // never be handed to the search engine.
@@ -1044,7 +1177,10 @@ function App() {
         if (/(?:make|create|generate|draw|dream|paint|render|summon).*(?:picture|image|photo|art|portrait|illustration|visual)|(?:a |the )?(?:picture|image|photo|art|painting) of/i.test(cleanTopic)) {
           setResponse(prev => `${prev}\n\n[DREAM CORE] Dispatching image backend...`);
           manifestImageFromRoundtable(cleanTopic);
-        } else if (/(?:find|search|look\s*up|lookup|google|browse|open|download|watch|play|buy|get)\b[^\n]*\b(?:online|free|web|website|site|url|link|browser|share|game|movie|video)\b|https?:\/\/\S+/i.test(cleanTopic)) {
+        } else if (!/(?:^|\s)https?:\/\/\S+/i.test(cleanTopic) && escortRe.test(cleanTopic)) {
+          setResponse(prev => `${prev}\n\n[WEB DRIVE] Dispatching play escort — opening best source + mouse drive...`);
+          manifestPlayEscortFromRoundtable(cleanTopic);
+        } else if (webIntentRe.test(cleanTopic)) {
           setResponse(prev => `${prev}\n\n[WEB SCOUT] Searching the web...`);
           manifestWebLookupFromRoundtable(cleanTopic);
         } else if (extractRefineQuery(cleanTopic)) {
@@ -1131,14 +1267,23 @@ function App() {
     }
 
     // Same idea for direct find/search/watch directives outside swarm mode.
-    if (/(?:find|search|look\s*up|lookup|google|browse|open|download|watch|play|buy|get)\b[^\n]*\b(?:online|free|web|website|site|url|link|browser|share|game|movie|video)\b|https?:\/\/\S+/i.test(trimmed)) {
+    if (webIntentRe.test(trimmed)) {
       setActiveBot('swarm');
       setIsSwarmDeliberating(true);
-      setResponse(`[WEB SCOUT]\nDirective: "${trimmed}"\nSearching the web for results...`);
-      observe('ROUNDTABLE', `Direct web directive: "${trimmed}"`);
+      const isEscort = !/(?:^|\s)https?:\/\/\S+/i.test(trimmed) && escortRe.test(trimmed);
+      const isAutopilot = !/(?:^|\s)https?:\/\/\S+/i.test(trimmed)
+        && /(?:autopilot|autoplay|pilot)\b/i.test(trimmed) || /till\b|\bbat\b|\bwin(?:\s+(?:level|round|stage))?\s*\d*\b|\bbeat(?:\s+(?:level|round|stage|it|the\s+game))?/i.test(trimmed);
+      setResponse(isEscort
+        ? (isAutopilot
+          ? `[WEB PILOT]\nDirective: "${trimmed}"\nEngaging autopilot to play and report the win...`
+          : `[WEB DRIVE]\nDirective: "${trimmed}"\nOpening the best source and driving the mouse to start it...`)
+        : `[WEB SCOUT]\nDirective: "${trimmed}"\nSearching the web for results...`);
+      observe('ROUNDTABLE', isEscort ? (isAutopilot ? `Direct autopilot directive: "${trimmed}"` : `Direct play-escort directive: "${trimmed}"`) : `Direct web directive: "${trimmed}"`);
       setSwarmTurns([]);
       try {
-        await manifestWebLookupFromRoundtable(trimmed);
+        if (isEscort && isAutopilot) await manifestAutopilotFromRoundtable(trimmed);
+        else if (isEscort) await manifestPlayEscortFromRoundtable(trimmed);
+        else await manifestWebLookupFromRoundtable(trimmed);
       } finally {
         setIsSwarmDeliberating(false);
       }
