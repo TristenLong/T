@@ -1002,6 +1002,19 @@ function App() {
     }
   };
 
+  // When a directive complains about previous results ("those don't have
+  // digdug", "wrong results"), strip the complaint and re-run WEB SCOUT on
+  // what actually remains, so the thread keeps going instead of dead-ending.
+  const extractRefineQuery = (topic) => {
+    const cleaned = String(topic || '').trim().replace(/[.!?]+$/, '');
+    if (!cleaned) return null;
+    const remain = cleaned
+      .replace(/^(?:those|these|that|this|the|one|none\s+of|none|nope|well|um|uh)\s+(?:don't|dont|doesn't|doesnt|do\s+not|does\s+not|didn't|didnt|isn't|isnt|aint|ain't|not|no|cant|can't|wrong|bad|broken|dead|useless|suck|sucks)\s*(?:have|has|had|got|contains?|include|includes?|work|works|working|find|give|of|with|me\s+the)?\s*/i, '')
+      .trim();
+    if (remain && remain !== cleaned && remain.length >= 2) return remain;
+    return null;
+  };
+
   const runRoundtable = async (topic) => {
     if (!topic || !topic.trim()) return;
     const cleanTopic = topic.trim();
@@ -1034,6 +1047,14 @@ function App() {
         } else if (/(?:find|search|look\s*up|lookup|google|browse|open|download|watch|play|buy|get)\b[^\n]*\b(?:online|free|web|website|site|url|link|browser|share|game|movie|video)\b|https?:\/\/\S+/i.test(cleanTopic)) {
           setResponse(prev => `${prev}\n\n[WEB SCOUT] Searching the web...`);
           manifestWebLookupFromRoundtable(cleanTopic);
+        } else if (extractRefineQuery(cleanTopic)) {
+          const refine = extractRefineQuery(cleanTopic);
+          setResponse(prev => `${prev}\n\n[WEB SCOUT] Earlier picks missed the mark — refining search to "${refine}"...`);
+          manifestWebLookupFromRoundtable(refine);
+        } else {
+          const hint = 'Say "find <X> online" or paste a link, and I will dispatch the web scout.';
+          setResponse(prev => `${prev}\n\n[WEB SCOUT] No direct action parsed. ${hint}`);
+          speak(hint, 'jester');
         }
       } else {
         throw new Error(data.error || 'Roundtable deliberation failed');
@@ -1127,6 +1148,23 @@ function App() {
     // If an individual specialist bot is active (Claude, Gemini, Critic, Codex)
     if (activeBot && activeBot !== 'jester' && activeBot !== 'default') {
       return handleAgentChat(activeBot, trimmed);
+    }
+
+    // A complaint-style follow-up ("those don't have digdug") re-runs WEB SCOUT
+    // on the real subject so the conversation keeps moving.
+    if (extractRefineQuery(trimmed)) {
+      const refine = extractRefineQuery(trimmed);
+      setActiveBot('swarm');
+      setIsSwarmDeliberating(true);
+      setResponse(`[WEB SCOUT]\nDirective: "${trimmed}"\nEarlier picks missed the mark — refining search to "${refine}"...`);
+      observe('ROUNDTABLE', `Refine directive: "${trimmed}"`);
+      setSwarmTurns([]);
+      try {
+        await manifestWebLookupFromRoundtable(refine);
+      } finally {
+        setIsSwarmDeliberating(false);
+      }
+      return;
     }
 
     setStatus('PROCESSING_STREAM...');
