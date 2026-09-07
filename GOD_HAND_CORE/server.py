@@ -2713,6 +2713,99 @@ def api_optimize_ram():
     return jsonify(res)
 
 
+@app.route('/api/web/search', methods=['POST'])
+def api_web_search():
+    """Live web search for find/ask directives. Returns structured links so the
+    HUD can render clickable results instead of just opening a search page."""
+    import re as _re
+    import urllib.parse as _urlparse
+    data = request.json or {}
+    query = (data.get('query') or '').strip()
+    if not query:
+        return jsonify({'status': 'ERROR', 'message': 'Empty query'}), 400
+
+    def _fetch_web_links():
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/125.0 Safari/537.36'}
+        # 1) Bing RSS (fast, clean XML, tolerant of bots)
+        try:
+            resp = requests.get(
+                'https://www.bing.com/search?q=' + _urlparse.quote(query) + '&format=rss',
+                headers=headers, timeout=12,
+            )
+            if resp.status_code == 200:
+                soup = BeautifulSoup(resp.content, 'xml')
+                items = []
+                for it in soup.find_all('item'):
+                    title = (it.title.get_text() if it.title else '').strip()
+                    link = (it.link.get_text() if it.link else '').strip()
+                    if title and link.startswith('http'):
+                        items.append({'title': title, 'url': link})
+                if len(items) >= 3:
+                    return items
+        except Exception:
+            pass
+        # 2) DuckDuckGo HTML scrape
+        try:
+            resp = requests.get(
+                'https://html.duckduckgo.com/html/?q=' + _urlparse.quote(query),
+                headers=headers, timeout=12,
+            )
+            if resp.status_code == 200:
+                soup = BeautifulSoup(resp.content, 'html.parser')
+                items = []
+                for res in soup.select('.result'):
+                    a = res.select_one('a.result__a')
+                    if not a:
+                        continue
+                    href = a.get('href') or ''
+                    if href.startswith('//duckduckgo.com/l/'):
+                        href = _urlparse.parse_qs(_urlparse.urlparse(href).query).get('uddg', [''])[0]
+                    title = a.get_text().strip()
+                    if title and href.startswith('http'):
+                        items.append({'title': title, 'url': href})
+                if len(items) >= 3:
+                    return items
+        except Exception:
+            pass
+        # 3) ddgs library (last resort)
+        try:
+            from research_core import search as ddg
+            items = []
+            for x in ddg(query, max_results=7):
+                url = (x.get('href') or x.get('url') or '').strip()
+                title = (x.get('title') or '').strip()
+                if url.startswith('http') and title:
+                    items.append({'title': title, 'url': url})
+            if items:
+                return items
+        except Exception:
+            pass
+        return []
+
+    try:
+        from bs4 import BeautifulSoup
+        seen = set()
+        out = []
+        for item in _fetch_web_links():
+            url = item.get('url', '')
+            domain = _re.sub(r'^www\.', '', (url.split('/', 3)[2] if '://' in url else '')).lower()
+            if not domain or domain in seen:
+                continue
+            seen.add(domain)
+            out.append({
+                'title': item.get('title', domain)[:160],
+                'url': url,
+                'domain': domain,
+            })
+            if len(out) >= 6:
+                break
+        if not out:
+            return jsonify({'status': 'ERROR', 'message': 'No results from web search (search engines may be rate-limited).'})
+        return jsonify({'status': 'SUCCESS', 'query': query, 'results': out})
+    except Exception as e:
+        return jsonify({'status': 'ERROR', 'message': f'Web search failed: {e}'}), 500
+
+
 @app.route('/api/sys/docker_status', methods=['GET'])
 def api_docker_status():
     """Report whether the Docker daemon is reachable (CODE SANDBOX dependency)."""

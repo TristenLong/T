@@ -936,24 +936,58 @@ function App() {
   };
 
   // Turn a "find X online / search for X / open some URL" directive into an
-  // actual action: open the system browser at the URL / a web search. The round
-  // table can only deliberate, so this is what makes a lookup "do something".
+  // actual action: query the live web search and show the real result links in
+  // the thread; fall back to opening the browser search when search is blocked.
   const manifestWebLookupFromRoundtable = async (topic) => {
-    const query = String(topic || '').trim();
+    const raw = String(topic || '').trim().replace(/[.!?]+$/, '');
+    // Engines keyword-skew on leading directive verbs ("find digdug game" ->
+    // "find your phone" junk), so strip the directive before querying.
+    const query = (raw.replace(/^(?:please\s+)?(?:can\s+you\s+)?(?:find|search(?:\s+(?:for|up))?|look\s+up|lookup|google|browse|open|download|watch|play|buy|get|show\s+me)\s+(?:a|an|the|me|us)?\s*/i, '') || raw).trim();
     const baseTurn = { bot_id: 'web', bot_name: 'WEB SCOUT', role: 'WEB LOOKUP', color: '#00CED1', avatar: 'Globe', timestamp: new Date().toLocaleTimeString() };
-    const directUrl = (query.match(/https?:\/\/[^\s]+/i) || [null])[0];
-    const target = directUrl || `https://duckduckgo.com/?q=${encodeURIComponent(query)}`;
-    const content = directUrl ? `[WEB DIRECT] Opening ${directUrl}` : `[WEB LOOKUP] Opened search for "${query}" in the browser`;
-    setSwarmTurns(prev => [...prev, { ...baseTurn, text: content, content, link: target }]);
-    setResponse(prev => `${prev}\n\n${content}\n${target}`);
-    speak(directUrl ? 'Opening that page in your browser, sir.' : 'Opening the web search in your browser, sir.', 'jester');
-    observe('WEB', `Opened ${directUrl ? 'direct link' : 'search'}: ${target}`);
-    remember('user', `[WEB LOOKUP] ${query}`);
-    remember('model', `[WEB SCOUT] ${content} -> ${target}`);
+    // A backend restart wipes the in-memory Puter token this process armed;
+    // best-effort re-arm just like image dispatch.
+    try { await armBackendWithPuter(); } catch (e) { /* best effort */ }
+    const solveDirect = (url) => {
+      try { if (typeof window !== 'undefined' && window.open) window.open(url, '_blank', 'noopener,noreferrer'); } catch (e) { console.warn('WEB_SCOUT_OPEN_FAILED', e); }
+    };
+    let turnExtras = {};
+    let target = null;
     try {
-      if (typeof window !== 'undefined' && window.open) window.open(target, '_blank', 'noopener,noreferrer');
+      const res = await fetch('/api/web/search', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query })
+      });
+      const data = await res.json();
+      if (data && data.status === 'SUCCESS' && data.results && data.results.length) {
+        const top = data.results.slice(0, 5);
+        turnExtras.webResults = top;
+        speak(`Here are the best links I could find${top.length ? `, ${top.length} results` : ''}, sir.`, 'jester');
+      } else {
+        target = `https://duckduckgo.com/?q=${encodeURIComponent(query)}`;
+        solveDirect(target);
+        speak('Web search was blocked, so I opened your browser instead, sir.', 'jester');
+      }
     } catch (e) {
-      console.warn('WEB_SCOUT_OPEN_FAILED', e);
+      target = `https://duckduckgo.com/?q=${encodeURIComponent(query)}`;
+      solveDirect(target);
+      speak('Web search failed, so I opened your browser instead, sir.', 'jester');
+    }
+    const directUrl = (query.match(/https?:\/\/[^\s]+/i) || [null])[0];
+    const content = directUrl
+      ? `[WEB DIRECT] Opening ${directUrl}`
+      : turnExtras.webResults && turnExtras.webResults.length
+        ? `[WEB FIND] "${query}" — ${turnExtras.webResults.length} sources uncovered`
+        : `[WEB LOOKUP] Opened search in your browser for "${query}"`;
+    const link = turnExtras.webResults && turnExtras.webResults.length ? turnExtras.webResults[0].url : (target || directUrl || null);
+    setSwarmTurns(prev => [...prev, { ...baseTurn, text: content, content, link, webResults: turnExtras.webResults }]);
+    setResponse(prev => `${prev}\n\n${content}\n${link ? link : ''}`);
+    observe('WEB', `Web lookup for "${query}" -> ${turnExtras.webResults ? turnExtras.webResults.length + ' results' : (target || 'direct link')}`);
+    remember('user', `[WEB LOOKUP] ${query}`);
+    if (turnExtras.webResults) {
+      turnExtras.webResults.forEach(r => remember('model', `[WEB SCOUT] ${r.title} -> ${r.url}`));
+    } else {
+      remember('model', `[WEB SCOUT] ${content}`);
     }
   };
 
@@ -987,7 +1021,7 @@ function App() {
           setResponse(prev => `${prev}\n\n[DREAM CORE] Dispatching image backend...`);
           manifestImageFromRoundtable(cleanTopic);
         } else if (/(?:find|search|look\s*up|lookup|google|browse|open|download|watch|play|buy|get)\b[^\n]*\b(?:online|free|web|website|site|url|game|movie|video)\b|https?:\/\/\S+/i.test(cleanTopic)) {
-          setResponse(prev => `${prev}\n\n[WEB SCOUT] Routing web lookup to browser...`);
+          setResponse(prev => `${prev}\n\n[WEB SCOUT] Searching the web...`);
           manifestWebLookupFromRoundtable(cleanTopic);
         }
       } else {
@@ -1068,7 +1102,7 @@ function App() {
     if (/(?:find|search|look\s*up|lookup|google|browse|open|download|watch|play|buy|get)\b[^\n]*\b(?:online|free|web|website|site|url|game|movie|video)\b|https?:\/\/\S+/i.test(trimmed)) {
       setActiveBot('swarm');
       setIsSwarmDeliberating(true);
-      setResponse(`[WEB SCOUT]\nDirective: "${trimmed}"\nRouting a web lookup to your browser...`);
+      setResponse(`[WEB SCOUT]\nDirective: "${trimmed}"\nSearching the web for results...`);
       observe('ROUNDTABLE', `Direct web directive: "${trimmed}"`);
       setSwarmTurns([]);
       try {
@@ -2518,6 +2552,16 @@ function App() {
                                 <a href={turn.link} target="_blank" rel="noreferrer" style={{ fontSize: '0.7rem', color: turn.color || theme.cyan }}>
                                   OPEN IN BROWSER ↗
                                 </a>
+                              </div>
+                            )}
+                            {turn.webResults && turn.webResults.length > 0 && (
+                              <div style={{ marginTop: '10px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                                {turn.webResults.map((r, i) => (
+                                  <a key={r.url} href={r.url} target="_blank" rel="noreferrer" style={{ fontSize: '0.72rem', color: theme.cyan, textDecoration: 'none', background: 'rgba(0,240,255,0.06)', border: '1px solid rgba(0,240,255,0.25)', borderLeft: `3px solid ${theme.cyan}`, borderRadius: '4px', padding: '6px 10px' }}>
+                                    <span style={{ color: '#FFF', fontWeight: 'bold' }}>{i + 1}. {r.title}</span>
+                                    <span style={{ display: 'block', color: theme.cyan, opacity: 0.7, fontSize: '0.65rem', wordBreak: 'break-all' }}>{r.url}</span>
+                                  </a>
+                                ))}
                               </div>
                             )}
                           </div>
