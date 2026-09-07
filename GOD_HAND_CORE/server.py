@@ -2911,6 +2911,38 @@ def api_swarm_execute_consensus():
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/api/image/generate', methods=['POST'])
+def api_image_generate():
+    """Manifest a picture from a prompt (Puter txt2img -> public/dreams/).
+
+    This is what 'Make a picture / generate an image / dream of ...' directives
+    route to after roundtable consensus -- deliberation alone was theatrical
+    because nothing ever dispatched the actual model call.
+    """
+    data = request.get_json() or {}
+    prompt = (data.get('prompt') or '').strip()
+    if not prompt:
+        return jsonify({'status': 'ERROR', 'message': 'No prompt provided'}), 400
+
+    try:
+        import dream_core
+        result = dream_core.generate_dream(prompt)
+        ok = result.get('status') == 'DREAM_MANIFESTED'
+        try:
+            global_event_queue.put({
+                'type': 'swarm_action',
+                'message': f"DREAM CORE {'released' if ok else 'failed'}: {prompt[:80]}",
+                'payload': result
+            })
+        except Exception:
+            pass
+        save_memory('model', f"[IMAGE {'GENERATED' if ok else 'FAILED'}: {prompt[:60]}] {result.get('url', result.get('message', ''))[:200]}")
+        return jsonify({**result, 'timestamp': time.strftime('%H:%M:%S')})
+    except Exception as e:
+        logger.error(f'IMAGE_GENERATE_ERROR: {e}')
+        return jsonify({'status': 'ERROR', 'message': str(e)}), 500
+
+
 @app.route('/api/swarm/tasks', methods=['GET'])
 def api_swarm_tasks():
     """Lists all grown scripts in swarm_tasks directory with execution and test metadata."""
