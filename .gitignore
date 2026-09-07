@@ -77,3 +77,6 @@ godot_demo/
 
 # Swarm task scripts (one-shot, generated dynamically by the coder swarm)
 swarm_tasks/
+
+# Generated dream images (Puter/DALL-E output)
+public/dreams/
