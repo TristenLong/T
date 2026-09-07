@@ -944,6 +944,20 @@ function App() {
     // "find your phone" junk), so strip the directive before querying.
     const query = (raw.replace(/^(?:please\s+)?(?:can\s+you\s+)?(?:find|search(?:\s+(?:for|up))?|look\s+up|lookup|google|browse|open|download|watch|play|buy|get|show\s+me)\s+(?:a|an|the|me|us)?\s*/i, '') || raw).trim();
     const baseTurn = { bot_id: 'web', bot_name: 'WEB SCOUT', role: 'WEB LOOKUP', color: '#00CED1', avatar: 'Globe', timestamp: new Date().toLocaleTimeString() };
+    // A bare/pasted URL (e.g. a shared link) must OPEN in the system browser --
+    // never be handed to the search engine.
+    const directUrl = (raw.match(/https?:\/\/[^\s]+/i) || [null])[0];
+    if (directUrl) {
+      try { if (typeof window !== 'undefined' && window.open) window.open(directUrl, '_blank', 'noopener,noreferrer'); } catch (e) { console.warn('WEB_SCOUT_OPEN_FAILED', e); }
+      const dContent = `[WEB DIRECT] Opening shared link in your browser`;
+      setSwarmTurns(prev => [...prev, { ...baseTurn, text: dContent, content: `${dContent}\n${directUrl}`, link: directUrl }]);
+      setResponse(prev => `${prev}\n\n${dContent}\n${directUrl}`);
+      speak('Opening that link in your browser, sir.', 'jester');
+      observe('WEB', `Opened shared link: ${directUrl}`);
+      remember('user', `[WEB OPEN] ${directUrl}`);
+      remember('model', `[WEB SCOUT] Opened ${directUrl}`);
+      return;
+    }
     // A backend restart wipes the in-memory Puter token this process armed;
     // best-effort re-arm just like image dispatch.
     try { await armBackendWithPuter(); } catch (e) { /* best effort */ }
@@ -973,13 +987,10 @@ function App() {
       solveDirect(target);
       speak('Web search failed, so I opened your browser instead, sir.', 'jester');
     }
-    const directUrl = (query.match(/https?:\/\/[^\s]+/i) || [null])[0];
-    const content = directUrl
-      ? `[WEB DIRECT] Opening ${directUrl}`
-      : turnExtras.webResults && turnExtras.webResults.length
-        ? `[WEB FIND] "${query}" — ${turnExtras.webResults.length} sources uncovered`
-        : `[WEB LOOKUP] Opened search in your browser for "${query}"`;
-    const link = turnExtras.webResults && turnExtras.webResults.length ? turnExtras.webResults[0].url : (target || directUrl || null);
+    const content = turnExtras.webResults && turnExtras.webResults.length
+      ? `[WEB FIND] "${query}" — ${turnExtras.webResults.length} sources uncovered`
+      : `[WEB LOOKUP] Opened search in your browser for "${query}"`;
+    const link = turnExtras.webResults && turnExtras.webResults.length ? turnExtras.webResults[0].url : (target || null);
     setSwarmTurns(prev => [...prev, { ...baseTurn, text: content, content, link, webResults: turnExtras.webResults }]);
     setResponse(prev => `${prev}\n\n${content}\n${link ? link : ''}`);
     observe('WEB', `Web lookup for "${query}" -> ${turnExtras.webResults ? turnExtras.webResults.length + ' results' : (target || 'direct link')}`);
@@ -1020,7 +1031,7 @@ function App() {
         if (/(?:make|create|generate|draw|dream|paint|render|summon).*(?:picture|image|photo|art|portrait|illustration|visual)|(?:a |the )?(?:picture|image|photo|art|painting) of/i.test(cleanTopic)) {
           setResponse(prev => `${prev}\n\n[DREAM CORE] Dispatching image backend...`);
           manifestImageFromRoundtable(cleanTopic);
-        } else if (/(?:find|search|look\s*up|lookup|google|browse|open|download|watch|play|buy|get)\b[^\n]*\b(?:online|free|web|website|site|url|game|movie|video)\b|https?:\/\/\S+/i.test(cleanTopic)) {
+        } else if (/(?:find|search|look\s*up|lookup|google|browse|open|download|watch|play|buy|get)\b[^\n]*\b(?:online|free|web|website|site|url|link|browser|share|game|movie|video)\b|https?:\/\/\S+/i.test(cleanTopic)) {
           setResponse(prev => `${prev}\n\n[WEB SCOUT] Searching the web...`);
           manifestWebLookupFromRoundtable(cleanTopic);
         }
@@ -1099,7 +1110,7 @@ function App() {
     }
 
     // Same idea for direct find/search/watch directives outside swarm mode.
-    if (/(?:find|search|look\s*up|lookup|google|browse|open|download|watch|play|buy|get)\b[^\n]*\b(?:online|free|web|website|site|url|game|movie|video)\b|https?:\/\/\S+/i.test(trimmed)) {
+    if (/(?:find|search|look\s*up|lookup|google|browse|open|download|watch|play|buy|get)\b[^\n]*\b(?:online|free|web|website|site|url|link|browser|share|game|movie|video)\b|https?:\/\/\S+/i.test(trimmed)) {
       setActiveBot('swarm');
       setIsSwarmDeliberating(true);
       setResponse(`[WEB SCOUT]\nDirective: "${trimmed}"\nSearching the web for results...`);
