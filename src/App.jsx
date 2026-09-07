@@ -933,6 +933,28 @@ function App() {
     }
   };
 
+  // Turn a "find X online / search for X / open some URL" directive into an
+  // actual action: open the system browser at the URL / a web search. The round
+  // table can only deliberate, so this is what makes a lookup "do something".
+  const manifestWebLookupFromRoundtable = async (topic) => {
+    const query = String(topic || '').trim();
+    const baseTurn = { bot_id: 'web', bot_name: 'WEB SCOUT', role: 'WEB LOOKUP', color: '#00CED1', avatar: 'Globe', timestamp: new Date().toLocaleTimeString() };
+    const directUrl = (query.match(/https?:\/\/[^\s]+/i) || [null])[0];
+    const target = directUrl || `https://duckduckgo.com/?q=${encodeURIComponent(query)}`;
+    const content = directUrl ? `[WEB DIRECT] Opening ${directUrl}` : `[WEB LOOKUP] Opened search for "${query}" in the browser`;
+    setSwarmTurns(prev => [...prev, { ...baseTurn, text: content, content, link: target }]);
+    setResponse(prev => `${prev}\n\n${content}\n${target}`);
+    speak(directUrl ? 'Opening that page in your browser, sir.' : 'Opening the web search in your browser, sir.', 'jester');
+    observe('WEB', `Opened ${directUrl ? 'direct link' : 'search'}: ${target}`);
+    remember('user', `[WEB LOOKUP] ${query}`);
+    remember('model', `[WEB SCOUT] ${content} -> ${target}`);
+    try {
+      if (typeof window !== 'undefined' && window.open) window.open(target, '_blank', 'noopener,noreferrer');
+    } catch (e) {
+      console.warn('WEB_SCOUT_OPEN_FAILED', e);
+    }
+  };
+
   const runRoundtable = async (topic) => {
     if (!topic || !topic.trim()) return;
     const cleanTopic = topic.trim();
@@ -962,6 +984,9 @@ function App() {
         if (/(?:make|create|generate|draw|dream|paint|render|summon).*(?:picture|image|photo|art|portrait|illustration|visual)|(?:a |the )?(?:picture|image|photo|art|painting) of/i.test(cleanTopic)) {
           setResponse(prev => `${prev}\n\n[DREAM CORE] Dispatching image backend...`);
           manifestImageFromRoundtable(cleanTopic);
+        } else if (/(?:find|search|look\s*up|lookup|google|browse|open|download|watch|play|buy|get)\b[^\n]*\b(?:online|free|web|website|site|url|game|movie|video)\b|https?:\/\/\S+/i.test(cleanTopic)) {
+          setResponse(prev => `${prev}\n\n[WEB SCOUT] Routing web lookup to browser...`);
+          manifestWebLookupFromRoundtable(cleanTopic);
         }
       } else {
         throw new Error(data.error || 'Roundtable deliberation failed');
@@ -1031,6 +1056,21 @@ function App() {
       setSwarmTurns([]);
       try {
         await manifestImageFromRoundtable(trimmed);
+      } finally {
+        setIsSwarmDeliberating(false);
+      }
+      return;
+    }
+
+    // Same idea for direct find/search/watch directives outside swarm mode.
+    if (/(?:find|search|look\s*up|lookup|google|browse|open|download|watch|play|buy|get)\b[^\n]*\b(?:online|free|web|website|site|url|game|movie|video)\b|https?:\/\/\S+/i.test(trimmed)) {
+      setActiveBot('swarm');
+      setIsSwarmDeliberating(true);
+      setResponse(`[WEB SCOUT]\nDirective: "${trimmed}"\nRouting a web lookup to your browser...`);
+      observe('ROUNDTABLE', `Direct web directive: "${trimmed}"`);
+      setSwarmTurns([]);
+      try {
+        await manifestWebLookupFromRoundtable(trimmed);
       } finally {
         setIsSwarmDeliberating(false);
       }
@@ -2416,6 +2456,13 @@ function App() {
                                   style={{ maxWidth: '100%', maxHeight: '320px', borderRadius: '8px', border: `1px solid ${turn.color || theme.cyan}66`, boxShadow: '0 0 20px rgba(0,0,0,0.5)', display: 'block', background: '#000' }}
                                 />
                                 <a href={turn.imageUrl} target="_blank" rel="noreferrer" style={{ fontSize: '0.7rem', color: turn.color || theme.cyan }}>
+                                  OPEN IN BROWSER ↗
+                                </a>
+                              </div>
+                            )}
+                            {!turn.imageUrl && turn.link && (
+                              <div style={{ marginTop: '8px' }}>
+                                <a href={turn.link} target="_blank" rel="noreferrer" style={{ fontSize: '0.7rem', color: turn.color || theme.cyan }}>
                                   OPEN IN BROWSER ↗
                                 </a>
                               </div>

@@ -1,5 +1,5 @@
 process.env['ELECTRON_DISABLE_SECURITY_WARNINGS'] = 'true';
-const { app, BrowserWindow, screen, globalShortcut, ipcMain } = require('electron');
+const { app, BrowserWindow, screen, globalShortcut, ipcMain, shell } = require('electron');
 const { spawn } = require('child_process');
 const fs = require('node:fs');
 const http = require('node:http');
@@ -239,9 +239,15 @@ async function createWindow() {
         // Puter's free AI tier signs you in via a popup (the js.puter.com SDK
         // flow); Electron blocks window.open by default. Allow the puter.com
         // login so the one-time auth popup can open and postMessage back.
+        // Any other http(s) link opens in the system's default browser instead
+        // of a blocked popup (images from DREAM CORE, WEB SCOUT lookups, ...).
         mainWindow.webContents.setWindowOpenHandler(({ url }) => {
             if (url.startsWith('https://puter.com') || url.startsWith('http://puter.com')) {
                 return { action: 'allow' };
+            }
+            if (url.startsWith('http://') || url.startsWith('https://')) {
+                shell.openExternal(url).catch(err => console.log(`[ELECTRON] openExternal failed: ${err.message}`));
+                return { action: 'deny' };
             }
             console.log(`[ELECTRON] Blocked popup to: ${url}`);
             return { action: 'deny' };
