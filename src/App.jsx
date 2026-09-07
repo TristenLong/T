@@ -163,6 +163,8 @@ function App() {
   const [diagnostics, setDiagnostics] = useState(null);
   const [showHud, setShowHud] = useState(true);
   const [showObservatory, setShowObservatory] = useState(false);
+  const [showLinks, setShowLinks] = useState(false);
+  const [dockerState, setDockerState] = useState(null);
   const [showArsenal, setShowArsenal] = useState(false);
   const [activeCategory, setActiveCategory] = useState('ALL');
   const [executingTool, setExecutingTool] = useState(null);
@@ -1383,6 +1385,24 @@ function App() {
       icon: <RefreshCw size={16}/>, 
       desc: 'Re-trigger self-awareness hologram test', 
       customAction: () => setBootSequence(true) 
+    },
+    { 
+      id: 'docker_status', 
+      label: 'DOCKER STATUS', 
+      category: 'SYSTEM',
+      hue: theme.blue, 
+      icon: <Terminal size={16}/>, 
+      desc: 'Check the Docker daemon powering CODE SANDBOX / consensus execution', 
+      customAction: () => runDockerStatus() 
+    },
+    { 
+      id: 'system_links', 
+      label: 'SYSTEM LINKS', 
+      category: 'SYSTEM',
+      hue: theme.cyan, 
+      icon: <Compass size={16}/>, 
+      desc: 'Open the panel with model providers, repos, local dashboards & resources', 
+      customAction: () => setShowLinks(true) 
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   ], []);
@@ -1458,6 +1478,39 @@ function App() {
       setStatus('THE_ONE_ONLINE');
     }
   }
+
+  const runDockerStatus = async () => {
+    setStatus('CHECKING_DOCKER...');
+    setResponse('> Probing Docker daemon (CODE SANDBOX dependency)...\n');
+    try {
+      const res = await fetch('/api/sys/docker_status');
+      const data = await res.json();
+      if (data && data.docker) {
+        setResponse(`> DOCKER STATUS: ONLINE\n  Server: ${data.server_version}\n  Platform: ${data.os}\n  Sandbox/CODEX executions available.`);
+        setDockerState(true);
+        speak('Docker daemon is online. Sandbox tasks available, sir.');
+      } else {
+        setResponse(`> DOCKER STATUS: OFFLINE\n  ${(data && data.message) || 'Daemon not responding'}\n  Start Docker Desktop and re-check.`);
+        setDockerState(false);
+        speak('Docker daemon is offline. Sandbox tasks are limited.');
+      }
+      observe('SYS', 'docker_status -> ' + (data && data.docker ? 'ONLINE' : 'OFFLINE'));
+    } catch (e) {
+      setResponse(`> DOCKER STATUS: CHECK FAILED\n  ${e.message}`);
+      setDockerState(false);
+    } finally {
+      setStatus('THE_ONE_ONLINE');
+    }
+  };
+
+  const openSystemLink = (url) => {
+    try {
+      if (typeof window !== 'undefined' && window.open) window.open(url, '_blank', 'noopener,noreferrer');
+    } catch (e) {
+      console.warn('OPEN_LINK_FAILED', e);
+      setResponse(`> Could not open ${url}`);
+    }
+  };
 
   const executeToolItem = async (tool) => {
     setExecutingTool(tool.id);
@@ -2520,7 +2573,71 @@ function App() {
                   </div>
                 )}
               </motion.div>
-            </AnimatePresence>
+{showLinks && (
+          <motion.div 
+            initial={{ opacity: 0, y: 30 }} 
+            animate={{ opacity: 1, y: 0 }} 
+            exit={{ opacity: 0, y: 30 }}
+            style={{ 
+              position: 'fixed', 
+              inset: '40px', 
+              zIndex: 90, 
+              background: 'rgba(0, 10, 5, 0.96)', 
+              border: `2px solid ${theme.cyan}`, 
+              borderRadius: '12px', 
+              boxShadow: `0 0 50px ${theme.cyan}44`,
+              display: 'flex', 
+              flexDirection: 'column', 
+              overflow: 'hidden',
+              pointerEvents: 'auto',
+              boxSizing: 'border-box'
+            }}
+          >
+            <div style={{ padding: '15px 25px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: 'rgba(0, 30, 20, 0.8)', borderBottom: `1px solid ${theme.cyan}55` }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px', color: theme.cyan, fontWeight: 'bold', fontSize: '1.1rem' }}>
+                <Compass size={20}/> SYSTEM LINKS &amp; RESOURCES
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                <span style={{ fontSize: '0.7rem', padding: '4px 10px', borderRadius: '4px', color: dockerState === false ? theme.err : theme.main, background: (dockerState === false ? theme.err : theme.main) + '22', border: `1px solid ${dockerState === false ? theme.err : theme.main}66` }}>
+                  DOCKER {dockerState === false ? 'OFFLINE' : dockerState ? 'ONLINE' : 'UNCHECKED'}
+                </span>
+                <button onClick={runDockerStatus} style={{ background: 'rgba(0,240,255,0.1)', border: `1px solid ${theme.cyan}`, color: theme.cyan, padding: '5px 12px', borderRadius: '4px', cursor: 'pointer', fontSize: '0.75rem', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <RefreshCw size={13}/> DOCKER CHECK
+                </button>
+                <button onClick={() => setShowLinks(false)} style={{ background: 'none', border: `1px solid ${theme.cyan}`, color: theme.cyan, padding: '5px 15px', borderRadius: '4px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <X size={16}/> CLOSE
+                </button>
+              </div>
+            </div>
+            <div style={{ flex: 1, overflowY: 'auto', padding: '20px' }}>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: '14px' }}>
+                {[
+                  { url: 'http://localhost:7860/client', label: 'JESTER VOICE CORE', desc: 'Open the voice client and talk to JESTER (WebRTC :7860)', icon: <Mic size={14}/> },
+                  { url: 'http://127.0.0.1:5173/observatory.html', label: 'FULLSCREEN OBSERVATORY', desc: 'Science telemetry dashboard (port 8765)', icon: <BarChart2 size={14}/> },
+                  { url: 'https://github.com/TristenLong/T', label: 'GITHUB REPO', desc: 'JESTER source repository (fix/gemini-tool-routing-and-launcher)', icon: <Code2 size={14}/> },
+                  { url: 'https://puter.com', label: 'PUTER', desc: 'Free AI sign-in that arms image generation & model routing', icon: <Globe size={14}/> },
+                  { url: 'https://openrouter.ai', label: 'OPENROUTER', desc: 'Multi-model API (free tier: qwen3-coder, glm-5.2, etc.)', icon: <Network size={14}/> },
+                  { url: 'https://ollama.com/library', label: 'OLLAMA LIBRARY', desc: 'Local models: qwen3:8b is the default fallback brain', icon: <Database size={14}/> },
+                  { url: 'https://www.docker.com/products/docker-desktop', label: 'DOCKER DESKTOP', desc: 'Engine for CODE SANDBOX / consensus execution', icon: <Terminal size={14}/> },
+                  { url: 'https://ai.google.dev/gemini-api/docs', label: 'GEMINI API', desc: 'Google Gemini docs & key management', icon: <Zap size={14}/> }
+                ].map(l => (
+                  <div key={l.url} onClick={() => openSystemLink(l.url)} style={{ background: 'rgba(0, 20, 10, 0.85)', border: `1px solid ${theme.cyan}55`, borderLeft: `4px solid ${theme.cyan}`, borderRadius: '8px', padding: '14px', cursor: 'pointer' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: theme.cyan, fontWeight: 'bold', fontSize: '0.85rem' }}>
+                      {l.icon} {l.label}
+                    </div>
+                    <div style={{ fontSize: '0.72rem', color: '#AAA', lineHeight: '1.35', marginTop: '6px' }}>
+                      {l.desc}
+                    </div>
+                    <div style={{ fontSize: '0.65rem', color: theme.cyan, opacity: 0.7, marginTop: '8px' }}>
+                      {l.url} ↗
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
             {/* Input & Voice Controls */}
             <div style={{ marginTop: '22px', display: 'flex', gap: '15px', alignItems: 'center', pointerEvents: 'auto' }}>

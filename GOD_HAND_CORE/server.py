@@ -2713,6 +2713,28 @@ def api_optimize_ram():
     return jsonify(res)
 
 
+@app.route('/api/sys/docker_status', methods=['GET'])
+def api_docker_status():
+    """Report whether the Docker daemon is reachable (CODE SANDBOX dependency)."""
+    import subprocess
+    try:
+        probe = subprocess.run(
+            ["docker", "info", "--format", "{{json .ServerVersion}} {{json .OperatingSystem}}"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if probe.returncode == 0 and probe.stdout.strip():
+            parts = probe.stdout.strip().split()
+            return jsonify({
+                'status': 'SUCCESS',
+                'docker': True,
+                'server_version': parts[0].strip('"') if parts else '?',
+                'os': parts[1].strip('"') if len(parts) > 1 else '?',
+            })
+        return jsonify({'status': 'ERROR', 'docker': False, 'message': 'Docker daemon is not responding. Start Docker Desktop.'})
+    except Exception as e:
+        return jsonify({'status': 'ERROR', 'docker': False, 'message': str(e)})
+
+
 @app.route('/api/sentry/scan', methods=['GET', 'POST'])
 def api_sentry_scan():
     """Background sentry perception: monitors system telemetry, screen focus, and anomalies."""

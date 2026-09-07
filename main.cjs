@@ -336,9 +336,18 @@ app.on('ready', async () => {
     } else {
         startPythonService('Flask API', 'uv', ['run', 'python', 'server.py'], godHandDir);
     }
-    startPythonService('Science Engine', 'uv', ['run', 'python', 'realtime_science_engine.py'], godHandDir);
-    // Use uv run to ensure GOD_HAND_CORE gets its proper virtual environment dependencies
-    startPythonService('God Hand Voice Core', 'uv', ['run', 'python', 'bot.py', '--transport', 'webrtc'], godHandDir);
+    // Clean boot guards: if a previous session already owns these service
+    // ports, attach instead of spawning a crash-on-bind duplicate.
+    if (await isPortListening(7860)) {
+        console.log('[SYSTEM] Voice Core already listening on :7860; attaching.');
+    } else {
+        startPythonService('God Hand Voice Core', 'uv', ['run', 'python', 'bot.py', '--transport', 'webrtc'], godHandDir);
+    }
+    if (await isPortListening(8765)) {
+        console.log('[SYSTEM] Science Engine already listening on :8765; attaching.');
+    } else {
+        startPythonService('Science Engine', 'uv', ['run', 'python', 'realtime_science_engine.py'], godHandDir);
+    }
 
     // 2. Create the HUD Window
     // Give servers a tiny bit of time to bind to their ports

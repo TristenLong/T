@@ -76,6 +76,25 @@ def main():
 
     print(f"[SYSTEM] Using Python: {python_exe}")
 
+    # Docker daemon (needed by CODE SANDBOX / swarm consensus execution). The
+    # Desktop binary is installed but its WSL engine stays stopped until the
+    # app is launched; wake it up so sandboxed tasks work without a manual
+    # "Open Docker Desktop" step. Non-fatal if unavailable.
+    docker_exe = os.path.join(
+        os.environ.get("LOCALAPPDATA", r"C:\Users\trist\AppData\Local"),
+        "Programs", "DockerDesktop", "Docker Desktop.exe",
+    )
+    if os.path.exists(docker_exe):
+        try:
+            probe = subprocess.run(
+                ["docker", "info"], capture_output=True, timeout=6
+            )
+            if probe.returncode != 0:
+                print("[SYSTEM] Docker daemon offline; starting Docker Desktop...")
+                subprocess.Popen([docker_exe])
+        except Exception as exc:
+            print(f"[WARN] Docker preflight skipped: {exc}")
+
     # Start the backend here, guarded by a port check.
     #
     # This used to be Electron's job alone ("Electron owns the backend
