@@ -83,6 +83,34 @@ def _puter_txt2img(prompt):
     data = resp.content
     if resp.status_code == 200 and data[:8] == b"\x89PNG\r\n\x1a\n":
         return data, None
+    # Puter also answers with a JSON envelope: {"success":true,
+    # "result":"data:image/png;base64,..."} (and sometimes a bare object as a
+    # string). Decode that case instead of reporting a raw-bytes failure.
+    parsed = None
+    try:
+        parsed = resp.json()
+    except Exception:
+        pass
+    if isinstance(parsed, dict):
+        if parsed.get("success") and parsed.get("result"):
+            result = parsed["result"]
+            if isinstance(result, str) and result.startswith("data:image/png;base64,"):
+                try:
+                    import base64
+                    img = base64.b64decode(result.split(",", 1)[1])
+                    if img[:8] == b"\x89PNG\r\n\x1a\n":
+                        return img, None
+                except Exception:
+                    pass
+            if isinstance(result, str) and result.startswith("http"):
+                try:
+                    img = requests.get(result, timeout=DREAM_TIMEOUT).content
+                    if img[:8] == b"\x89PNG\r\n\x1a\n":
+                        return img, None
+                except Exception:
+                    pass
+        if not parsed.get("success") and parsed.get("error"):
+            return None, f"Puter text-to-image rejected: {parsed['error']}"
     try:
         payload = data[:400].decode("utf-8", "replace")
     except Exception:
