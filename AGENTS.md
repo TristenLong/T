@@ -9,7 +9,8 @@ The JESTER / GOD_HAND project is an autonomous multi-modal agent stack comprisin
 - **Voice / Audio**: WebRTC + Pipecat + Deepgram/Cartesia audio stream (port 7860)
 - **Vision / UI**: React + Vite matrix observatory hub (port 5173)
 - **API Server**: Flask backend endpoints (port 5000)
-- **Multi-Agent Terminal Fleet**: Claude Code, Gemini CLI, OpenCode, and specialized sub-agents.
+- **Web Agent & Automation**: Playwright browser driver, task automation, Q-learning game player (`web_agent.mjs`), custom retro arcade harnesses (`digger_game.html`), and test probes (`td_probe.mjs`)
+- **Multi-Agent Terminal Fleet**: Claude Code, Gemini CLI, OpenCode, Antigravity, and specialized sub-agents.
 
 ## Agent Fleet & Roles
 1. **`brutal_critic`** (`.claude/agents/brutal_critic.md`):

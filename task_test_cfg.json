@@ -1,0 +1,18 @@
+{
+  "mode": "task",
+  "device": "web-agent",
+  "goal": "read the example page and verify its title",
+  "task": {
+    "url": "https://example.com/",
+    "maxSteps": 30,
+    "actions": [
+      { "type": "wait", "ms": 1500 },
+      { "type": "read", "selector": "h1", "max": 120 },
+      { "type": "verifyText", "verifyText": "Example Domain", "stopIfMissing": true },
+      { "type": "read", "selector": "body", "max": 200 },
+      { "type": "screenshot" }
+    ]
+  },
+  "stateFile": "C:/Users/trist/AppData/Local/Temp/opencode/web_agent_state.json",
+  "headless": false
+}

@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Digger Tunneler</title>
+<style>
+  body { background:#1a1410; color:#eee; font-family:Consolas,monospace; margin:0; padding:16px; display:flex; justify-content:center; }
+  #wrap { width:576px; }
+  #hud { display:flex; justify-content:space-between; margin-bottom:6px; font-size:13px; color:#7CFF7C; }
+  #hud b { color:#ffd75e; }
+  #ctx { background:#000; border:3px solid #4a2f1d; border-radius:6px; display:block; }
+  #msg { margin-top:8px; min-height:20px; font-size:12px; color:#9ac; }
+  .keys { margin-top:6px; font-size:11px; color:#667; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div id="hud">SCORE:<b id="vScore">0</b> LIVES:<b id="vLives">3</b> LEVEL:<b id="vLevel">5</b> TILES:<b id="vTiles">96</b></div>
+  <canvas id="ctx" width="576" height="384"></canvas>
+  <div id="msg"></div>
+  <div class="keys">ARROWS = move over dug tiles (left/right/up/down) · SPACE = dig forward (up) · one action at a time</div>
+</div>
+<script>
+(function () {
+  const q = new URLSearchParams(location.search);
+  const LEVEL = parseInt(q.get('level') || '5', 10);
+  const COLS = 12, ROWS = 8, TILE = 48, W = 576, H = 384;
+  // the bottom row is the tunnel floor the digger walks on; dirt is above it
+  const DIRT_TOTAL = (ROWS - 1) * COLS;
+
+  // lesson levels (learning loop):
+  //   1 = move only;  2 = + dig forward (+score);  3 = combined;
+  //   4 = + enemy drift/creep (+lives);  5 = full (scoring + life loss)
+  const MOVE = LEVEL >= 1, DIG = LEVEL >= 2, ENEMIES = LEVEL >= 4, LIVES = LEVEL >= 4;
+
+  const canvas = document.getElementById('ctx');
+  const ctx = canvas.getContext('2d');
+  const el = (id) => document.getElementById(id);
+
+  const S = {
+    level: LEVEL,
+    col: 4, row: ROWS - 1,
+    score: 0, lives: 3, cleared: 0,
+    won: false, over: false,
+    movingEnabled: MOVE, digEnabled: DIG, enemiesEnabled: ENEMIES, livesEnabled: LIVES,
+    lastT: performance.now(), driftT: 0, downT: 0,
+  };
+  const clearTile = [];
+  for (let r = 0; r < ROWS; r++) { clearTile[r] = new Array(COLS).fill(false); }
+  let enemies = [];
+  if (ENEMIES) enemies = [ { col: 2, row: 0 }, { col: 6, row: 0 }, { col: 9, row: 0 } ];
+
+  const isOpen = (r, c) => r >= 0 && r < ROWS && c >= 0 && c < COLS && (clearTile[r][c] || r === ROWS - 1);
+
+  function colStats() {
+    let unfinishedCount = 0, nextDx = 0, best = 99;
+    for (let c = 0; c < COLS; c++) {
+      let done = true;
+      for (let r = 0; r < ROWS - 1; r++) { if (!clearTile[r][c]) { done = false; break; } }
+      if (!done) {
+        unfinishedCount += 1;
+        const dx = c - S.col;
+        if (Math.abs(dx) < Math.abs(best)) best = dx;
+      }
+    }
+    return { unfinishedCount, nextDx: best === 99 ? 0 : best };
+  }
+
+  function snapshot() {
+    const cs = colStats();
+    return {
+      level: S.level, col: S.col, row: S.row,
+      score: S.score, lives: S.lives, cleared: S.cleared,
+      tiles: DIRT_TOTAL, won: S.won, over: S.over,
+      diggable: S.row > 0 && !clearTile[S.row - 1][S.col],
+      unfinishedCount: cs.unfinishedCount, nextDx: cs.nextDx,
+      movingEnabled: S.movingEnabled, digEnabled: S.digEnabled,
+      enemiesEnabled: S.enemiesEnabled, livesEnabled: S.livesEnabled,
+      enemies: enemies.map((e) => ({ col: e.col, row: e.row })),
+    };
+  }
+  function setMsg(m) { el('msg').textContent = m || ''; }
+  function refreshHud() {
+    el('vScore').textContent = S.score;
+    el('vLives').textContent = S.lives;
+    el('vLevel').textContent = S.level;
+    el('vTiles').textContent = DIRT_TOTAL - S.cleared;
+  }
+  function resetEnemies() {
+    enemies = [{ col: 2, row: 0 }, { col: 6, row: 0 }, { col: 9, row: 0 }];
+    S.col = 4; S.row = ROWS - 1; S.driftT = 0; S.downT = 0;
+  }
+  function loseLife() {
+    if (!S.livesEnabled) return;
+    S.lives -= 1;
+    if (S.lives <= 0) { S.lives = 0; S.over = true; setMsg('GAME OVER — enemy row won'); }
+    else { setMsg('Hit an enemy tile! -1 life'); resetEnemies(); }
+  }
+  function move(dir) {
+    if (!S.movingEnabled || S.over || S.won) return false;
+    const d = { left: [0, -1], right: [0, 1], up: [-1, 0], down: [1, 0] }[dir];
+    const nr = S.row + d[0], nc = S.col + d[1];
+    if (!isOpen(nr, nc)) return false;        // can only stand on dug tiles or the surface
+    S.row = nr; S.col = nc;
+    return true;
+  }
+  function dig() {
+    if (!S.digEnabled || S.over || S.won) return false;
+    if (S.row === 0) { setMsg('Already at the top — nothing left to dig'); return false; }
+    const nr = S.row - 1;                     // dig forward (up one row)
+    clearTile[S.row][S.col] = true;           // carve the exit tunnel so we can walk back
+    if (!clearTile[nr][S.col]) {
+      clearTile[nr][S.col] = true;
+      S.cleared += 1;
+      S.score += 1;                           // +1 point per tile cleared
+    }
+    S.row = nr;                               // digging moves the digger forward
+    if (S.cleared >= DIRT_TOTAL) { S.won = true; setMsg('YOU CLEARED ALL TILES — WON'); }
+    return true;
+  }
+  function update() {
+    if (S.over || S.won || !ENEMIES) return;
+    const now = performance.now();
+    const dt = now - S.lastT; S.lastT = now;
+    S.driftT += dt; S.downT += dt;
+    if (S.driftT >= 500) {                    // enemy tiles drift left/right every ~0.5s
+      S.driftT = 0;
+      for (const e of enemies) {
+        const d = Math.floor(Math.random() * 3) - 1;
+        e.col = Math.max(0, Math.min(COLS - 1, e.col + d));
+      }
+    }
+    if (S.downT >= 1000) {                    // enemy row creeps toward the digger ~1s/row
+      S.downT = 0;
+      for (const e of enemies) e.row += 1;
+    }
+    // enemy row reaching the digger costs a life
+    for (const e of enemies) {
+      if (e.row > ROWS - 1) { S.over = true; setMsg('GAME OVER — enemy row reached the digger'); return; }
+      if (e.col === S.col && e.row === S.row) { loseLife(); return; }
+    }
+  }
+  function draw() {
+    ctx.clearRect(0, 0, W, H);
+    for (let r = 0; r < ROWS; r++) {
+      for (let c = 0; c < COLS; c++) {
+        const x = c * TILE, y = r * TILE;
+        if (clearTile[r][c]) ctx.fillStyle = '#0e0a08';
+        else ctx.fillStyle = '#6b4a2a';
+        ctx.fillRect(x, y, TILE, TILE);
+        if (!clearTile[r][c]) { ctx.strokeStyle = '#4a3018'; ctx.strokeRect(x + 0.5, y + 0.5, TILE - 1, TILE - 1); }
+      }
+    }
+    for (const e of enemies) {
+      ctx.fillStyle = '#ff3b30';
+      ctx.fillRect(e.col * TILE + 6, e.row * TILE + 6, TILE - 12, TILE - 12);
+    }
+    const px = S.col * TILE + 8, py = S.row * TILE + 8;
+    ctx.fillStyle = '#7CFF3C';
+    ctx.beginPath(); ctx.arc(px + 16, py + 16, 14, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#000';
+    ctx.fillRect(px + 14, py + 10, 4, 4);
+    refreshHud();
+  }
+  function loop() { update(); draw(); requestAnimationFrame(loop); }
+
+  window.addEventListener('keydown', (ev) => {
+    const k = ev.key;
+    if (k === 'ArrowLeft') { move('left'); ev.preventDefault(); }
+    else if (k === 'ArrowRight') { move('right'); ev.preventDefault(); }
+    else if (k === 'ArrowUp') { move('up'); ev.preventDefault(); }
+    else if (k === 'ArrowDown') { move('down'); ev.preventDefault(); }
+    else if (k === ' ') { dig(); ev.preventDefault(); }
+  });
+
+  window.__GG = {
+    state: snapshot,
+    level: LEVEL,
+    input: (dir) => move(dir),
+    dig,
+    clear: clearTile,
+  };
+
+  resetEnemies();
+  refreshHud();
+  setMsg('LEVEL ' + LEVEL + ' — ready');
+  loop();
+})();
+</script>
+</body>
+</html>

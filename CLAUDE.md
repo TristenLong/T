@@ -8,14 +8,16 @@
 This repository contains the **JESTER / GOD_HAND** hybrid voice, vision, and terminal intelligence system.
 - **Frontend**: React + Vite on port 5173 (`npm run dev`)
 - **Backend / Core**: Python Flask (port 5000) and GOD_HAND Core / Pipecat WebRTC engine (port 7860)
-- **Terminal Workflows**: Claude Code, Gemini CLI, OpenCode, and sub-agents.
+- **Web Agent & Automation**: Playwright browser driver, task automation, Q-learning game player (`node web_agent.mjs`), custom retro arcade harnesses (`digger_game.html`), and probe suites (`td_probe.mjs`)
+- **Terminal Workflows**: Claude Code, Gemini CLI, OpenCode, Antigravity, and sub-agents.
 
 ## Core Commands & Guidelines
 - **Development**:
   - Frontend: `npm run dev` (Vite port 5173)
   - Backend: `python server/server.py` (Flask port 5000)
   - Core: `python GOD_HAND_CORE/bot.py` or `python start_jester.py`
-  - Tests: `npm test`
+  - Web Agent: `node web_agent.mjs` (Game / Browser task runner)
+  - Probes / Tests: `node td_probe.mjs`, `npm test`, `pytest tests/`
 - **Sub-Agents Location**: `.claude/agents/`
   - `brutal_critic.md`: Multi-perspective anti-gaslighting critique agent.
   - `session_closer.md`: End-of-day summary, context sync, and git commit agent.
