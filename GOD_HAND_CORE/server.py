@@ -3416,7 +3416,7 @@ _AGENT_STATE = os.path.join(os.environ.get('TEMP', 'C:\\Users\\trist\\AppData\\L
 
 _GAME_ALIASES = [
     (r'\bbubble\s*bobble\b', 'bubble-bobble'),
-    (r'\bdig\s*dug\b', 'dig-dug'),
+    (r'\bdig[-\s]*dug\b', 'dig-dug'),
     (r'\bgalaga\b', 'galaga'),
     (r'\smario\b', 'mario'),
     (r'\bpac[-\s]*man\b', 'pac-man'),
@@ -3481,19 +3481,21 @@ def _autoplay_worker_node(query, max_steps, goal):
     log = state['log']
     log.append(f'Autopilot (Playwright) started: "{query}" | goal: {goal}')
     try:
-        ranked = _web_search_results(query)
-        if not ranked:
-            state['error'] = 'No free source found for the query.'
-            state['running'] = False
-            return
-        best = ranked[0]
         reg, known_url = _pick_game_registry(query)
-        url = best.get('url') or known_url
-        if not url:
+        if known_url:
             url = known_url
-        states = [_ for _ in ranked if 'arcadespot' in _.get('url', '')]
-        if states:
-            url = states[0]['url']
+            best = {'url': known_url, 'title': (reg or 'game').title(), 'domain': 'arcadespot.com'}
+        else:
+            ranked = _web_search_results(query)
+            if not ranked:
+                state['error'] = 'No free source found for the query.'
+                state['running'] = False
+                return
+            best = ranked[0]
+            url = best.get('url')
+            states = [_ for _ in ranked if 'arcadespot' in _.get('url', '')]
+            if states:
+                url = states[0]['url']
         state.update({'url': url, 'title': best.get('title'), 'domain': best.get('domain'),
                       'registry': reg or 'generic'})
         log.append(f'Best source: {best.get("title")} -> {url} (registry={reg or "generic"})')
@@ -3515,6 +3517,7 @@ def _autoplay_worker_node(query, max_steps, goal):
                 'strategyHint': hints.get('strategyHint'),
                 'startKeysHint': hints.get('startKeysHint'),
                 'winMarkersHint': hints.get('winMarkersHint'),
+                'vision': True,
             },
             'stateFile': _AGENT_STATE,
             'headless': False,

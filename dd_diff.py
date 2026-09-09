@@ -24,17 +24,18 @@ cw, ch = w / 100.0, h / 100.0
 # enemy reads); enemies cannot exist above ~y22% in round 1.
 Y0, Y1 = int(h * 0.22), int(h * 0.88)
 
-def is_player(r, g, b):
-    return r > 150 and g < 90 and b < 90 and (r - g) > 140
+def is_pooka(r, g, b):
+    return r > 150 and g < 75 and b < 75
 
-def is_purple(r, g, b):
-    return b > 100 and r > 60 and g < 120 and abs(r - b) < 90
-
-def is_green(r, g, b):
-    return g > 120 and r < 120 and b < 100 and (g - r) > 25
+def is_fygar(r, g, b):
+    return g > 110 and r < 75 and b < 75
 
 def is_enemy(r, g, b):
-    return is_purple(r, g, b) or is_green(r, g, b)
+    return is_pooka(r, g, b) or is_fygar(r, g, b)
+
+def is_player(r, g, b):
+    # Dig Dug: white suit (255,255,255) and cyan accessories (0,130,140)
+    return (r > 240 and g > 240 and b > 240) or (b > 110 and g > 100 and r < 60)
 
 def collect(px, preds):
     pts = {k: [] for k in preds}
@@ -47,7 +48,7 @@ def collect(px, preds):
                     break
     return pts
 
-def clusters(ps, gap=40, min_n=6):
+def clusters(ps, gap=35, min_n=6):
     out = []
     for p in ps:
         done = False
@@ -64,48 +65,60 @@ def clusters(ps, gap=40, min_n=6):
 
 n = lambda c: {"x": round(c[0] / cw, 1), "y": round(c[1] / ch, 1), "n": int(c[2])}
 
-# attract/name-table indicator: enemy+player clutter ABOVE the cave
+# attract/name-table indicator: enemy+player clutter in the sky area (excluding score area on the right)
 tt, te = [], []
-for y in range(int(h * 0.08), Y0, 2):
-    for x in range(0, w, 2):
+for y in range(int(h * 0.04), int(h * 0.16), 2):
+    for x in range(0, int(w * 0.60), 2):
         c = pa[x, y]
         if is_player(*c):
             tt.append((x, y))
         elif is_enemy(*c):
             te.append((x, y))
-topEnemies = clusters(te, gap=40, min_n=15)
-topPlayers = clusters(tt, gap=35, min_n=40)
+topEnemies = clusters(te, gap=40, min_n=20)
+topPlayers = clusters(tt, gap=35, min_n=50)
 
 base = collect(pa, {"p": is_player, "e": is_enemy})
 post = collect(pb, {"p": is_player, "e": is_enemy})
-bp = clusters(base["p"], gap=35, min_n=40)   # player = biggest strict-orange cluster
-be = clusters(base["e"], gap=40, min_n=15)
-pp = clusters(post["p"], gap=35, min_n=40)
-pe = clusters(post["e"], gap=40, min_n=15)
+be = clusters(base["e"], gap=35, min_n=10)
+pe = clusters(post["e"], gap=35, min_n=10)
 
-best_bp = max(bp, key=lambda c: c[2]) if bp else None
-best_pp = max(pp, key=lambda c: c[2]) if pp else None
+# Filter out white pixels belonging to enemy eyes/goggles
+bp_raw = clusters(base["p"], gap=35, min_n=10)
+pp_raw = clusters(post["p"], gap=35, min_n=10)
+bp = [p for p in bp_raw if not any(math.hypot(p[0] - e[0], p[1] - e[1]) < 35 for e in be)]
+pp = [p for p in pp_raw if not any(math.hypot(p[0] - e[0], p[1] - e[1]) < 35 for e in pe)]
 
-# diff-based player (moving orange) as the authoritative post position
-orange_diff, enemy_diff = [], []
+# Center anchor for player selection among static rocks
+cx, cy = w * 0.45, h * 0.48
+best_bp = min(bp, key=lambda c: math.hypot(c[0] - cx, c[1] - cy)) if bp else None
+best_pp = min(pp, key=lambda c: math.hypot(c[0] - cx, c[1] - cy)) if pp else None
+
+# diff-based player (moving white/cyan) as the authoritative post position
+player_diff, enemy_diff = [], []
 for y in range(Y0, Y1, 2):
     for x in range(0, w, 2):
         c1, c2 = pa[x, y], pb[x, y]
         if abs(c1[0] - c2[0]) + abs(c1[1] - c2[1]) + abs(c1[2] - c2[2]) < 45:
             continue
         if is_player(*c2):
-            orange_diff.append((x, y))
+            player_diff.append((x, y))
         elif is_enemy(*c2):
             enemy_diff.append((x, y))
-oec = clusters(enemy_diff, gap=40, min_n=6)
+
+oec = clusters(enemy_diff, gap=35, min_n=8)
+opc_raw = clusters(player_diff, gap=35, min_n=8)
+opc = [p for p in opc_raw if not any(math.hypot(p[0] - e[0], p[1] - e[1]) < 35 for e in oec)]
+best_diff_p = max(opc, key=lambda c: c[2]) if opc else None
+
+chosen_player = best_diff_p or best_pp or best_bp
 
 print(json.dumps({
-    "player": n(best_pp) if best_pp else (n(best_bp) if best_bp else None),
+    "player": n(chosen_player) if chosen_player else None,
     "basePlayer": n(best_bp) if best_bp else None,
     "baseEnemies": [n(c) for c in be],
     "enemies": [n(c) for c in pe],
     "movingEnemies": [n(c) for c in oec],
-    "moving": len(orange_diff) + len(enemy_diff),
+    "moving": len(player_diff) + len(enemy_diff),
     "topEnemies": [n(c) for c in topEnemies],
     "attractTop": len(topEnemies) + len(topPlayers),
 }))

@@ -2,10 +2,11 @@
   "mode": "game",
   "device": "web-agent",
   "goal": "win the first level",
-  "maxSteps": 150,
+  "maxSteps": 350,
+  "maxRetries": 5,
   "game": {
     "url": "https://arcadespot.com/game/dig-dug/",
-"registry": "dig-dug",
+    "registry": "dig-dug",
     "strategyHint": null,
     "startKeysHint": null,
     "winMarkersHint": null,
@@ -14,4 +15,3 @@
   "stateFile": "C:/Users/trist/AppData/Local/Temp/opencode/web_agent_state.json",
   "headless": false
 }
-

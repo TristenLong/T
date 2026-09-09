@@ -57,8 +57,7 @@ const GAME_REGISTRY = {
   'dig-dug': {
     startKeys: ['X', 'Enter', '5', '1'],
     titleMarkers: [/1\s*PLAYER/i, /2\s*PLAYERS/i, /NAMCO/i],
-    gameplayMarkers: [],
-    winMarkers: [/ROUND\s*2/i, /LEVEL\s*2/i, /STAGE\s*2/i, /CONGRAT/i],
+    winMarkers: [/\b(?:ROUND|LEVEL|STAGE)\s*0?2\b/i, /\b0?2\s*(?:ROUND|LEVEL|STAGE)\b/i, /CONGRAT/i],
     deadMarkers: [/GAME\s*OVER/i],
     strategy: 'dig-dug',
     fallbackUrls: [
@@ -286,31 +285,34 @@ async function runVisionSearch(state, cfg, browser, page, { useSim, bootClip, pr
 
 // --- BOOT (same as runGame). No fast-forward: on EJS 4.x it freezes frames
   // and paints a "Fast-Forward. = ..." overlay that pollutes OCR.
-  let boot = 0;
-  while (boot < 16) {
-    const see = await perceive(state, page, clip, 'boot');
-    state.lastOcr = see.text;
-    const onTitle = titleMarkers.length ? matchMarkers(see.text, titleMarkers) : false;
-    say(state, `boot[${boot}] "${see.text.slice(0, 60)}" title=${onTitle}`);
-    if (!onTitle && see.text.trim() && boot > 1) { state.started = true; started = true; break; }
-    await pressKey(startKeys[boot % startKeys.length], 400).catch(() => {});
-    await pressKey('X', 350).catch(() => {});
-    await page.waitForTimeout(1200);
-    boot++;
+  if (!state.started && !useSim) {
+    let boot = 0;
+    while (boot < 16) {
+      const see = await perceive(state, page, clip, 'boot');
+      state.lastOcr = see.text;
+      const onTitle = titleMarkers.length ? matchMarkers(see.text, titleMarkers) : false;
+      say(state, `boot[${boot}] "${see.text.slice(0, 60)}" title=${onTitle}`);
+      if (!onTitle && see.text.trim() && boot > 1) { state.started = true; started = true; break; }
+      await pressKey(startKeys[boot % startKeys.length], 400).catch(() => {});
+      await pressKey('X', 350).catch(() => {});
+      await page.waitForTimeout(1200);
+      boot++;
+    }
+  } else {
+    state.started = true;
+    started = true;
   }
-  if (!state.started) { say(state, 'BOOT FAILED'); return; }
-  say(state, 'GAME STARTED — survival autopilot (play through round 1)');
+  say(state, 'GAME STARTED — waiting 5.5s for Round 1 intro jingle...');
+  await page.waitForTimeout(5500);
+  if (canvas) {
+    try { await canvas.click(); } catch (e) {}
+  }
+  say(state, 'LIVE GAMEPLAY ENGAGED — survival autopilot (play through round 1)');
 
-  // research lever: fresh round-1 restart point (savestate re-boots instead of
-  // OCR key-mashing) + optional slow-motion decision headroom (0.5x).
-  // Defer the snapshot until the vision loop confirms live play (player found),
-  // so we don't save an attract/demo frame as the "boot" restore point.
+  // research lever: fresh round-1 restart point.
+  // Defer the snapshot until the vision loop confirms live play (player moving),
+  // so we don't save a frozen intro/jingle frame as the "boot" restore point.
   let _deferredSnap = true;
-  if (useStates && g.useSavestates !== false) {
-    const n = await saveSlot('boot');
-    if (n > 0) { say(state, `SAVESTATE saved boot snapshot (${n} bytes) — deaths restore instantly`); _deferredSnap = false; }
-    else { useStates = false; say(state, 'savestate API unavailable — falling back to OCR key re-boot'); }
-  }
   if (wantSlow) { await setFlow('slow'); slowOn = true; say(state, 'slow-motion engaged (0.5x)'); }
 
   // Autopilot parameters: hand-overridden in cfg.game.autopilot, or seeded from
@@ -471,6 +473,14 @@ async function runVisionSearch(state, cfg, browser, page, { useSim, bootClip, pr
   const relaunchGame = async () => {
     try { await page.goto(g.__activeUrl || g.url, { waitUntil: 'domcontentloaded', timeout: 60000 }); } catch (e) { say(state, `relaunch goto failed: ${String(e.message || e).slice(0, 80)}`); return false; }
     await page.waitForTimeout(3000);
+    try {
+      const host2 = ((g.__activeUrl || g.url) || '').split('/')[2] || '';
+      if (/arcadepot|arcadespot/i.test(host2)) {
+        const playBtn = page.locator('a:text("Play"), button:text("Play"), a:text("Play Game"), button:text("Play Game"), .as-play-col').first();
+        if (await playBtn.count()) await playBtn.click({ timeout: 6000 });
+      }
+    } catch (e) {}
+    await page.waitForTimeout(4000);
     for (let i = 0; i < 40; i++) {
       const got = await frameEval(page, () => { try { return !!(window.EJS_emulator && document.querySelector('canvas.ejs_canvas')); } catch (e) { return false; } }).catch(() => false);
       if (got) break;
@@ -524,30 +534,23 @@ async function runVisionSearch(state, cfg, browser, page, { useSim, bootClip, pr
     const ALIGN_Y = 34;                       // acceptable cross-tunnel offset
     const SEP_MIN = 120;                      // second-enemy buffer before committing
     const attractTop = ent ? (ent.attractTop || 0) : 99;
-    const liveFrame = !!(entPx && attractTop < 2);
+    const isRoundLive = state.round != null || (state.lastOcr && /ROUND/i.test(state.lastOcr));
+    const liveFrame = !!(entPx && (attractTop < 2 || isRoundLive));
     if (liveFrame) state._attractStall = 0;
     // Deferred snapshot: save the first confirmed live frame as the boot restore
-    // point (not the attract screen from the boot gate).
-    if (liveFrame && _deferredSnap && useStates) {
+    // point only after player has actively moved in live gameplay.
+    const earlyMoved = state._lastPos ? Math.hypot(entPx.x - state._lastPos.x, entPx.y - state._lastPos.y) : 99;
+    if (liveFrame && _deferredSnap && useStates && state.steps >= 10 && earlyMoved >= 3) {
       const n = await saveSlot('boot');
-      if (n > 0) { say(state, `SAVESTATE saved live snapshot (${n} bytes) — deaths restore instantly`); _deferredSnap = false; }
+      if (n > 0) { say(state, `SAVESTATE saved live moving snapshot (${n} bytes) — deaths restore instantly`); _deferredSnap = false; }
     }
     if (entPx) {
+      const moved = state._lastPos ? Math.hypot(entPx.x - state._lastPos.x, entPx.y - state._lastPos.y) : 99;
+      state._lastPos = entPx;
+      if (moved < 3 && state.steps > 10) state._stuck = (state._stuck || 0) + 1; else state._stuck = 0;
       const { foe, d } = nearestFoe(entPx, foesPx);
       let d2 = Infinity;
       if (foe) for (const f of foesPx) { if (f !== foe) d2 = Math.min(d2, dist(entPx, f)); }
-      // research lever: keep the restore point refreshed at SAFE, LIVE moments
-      // (player present + no attract clutter). Death-restores then drop into a
-      // survivable spot instead of mid-combat (which re-dies in a few steps).
-      if (useStates && state.started && liveFrame) {
-        state._snapCool = (state._snapCool || 0) + 1;
-        const lastText = state.lastOcr || '';
-        const snapOk = (!titleMarkers.length || !matchMarkers(lastText, titleMarkers)) && !/CHARACTER|POOKA|FYGAR|GAME\s*OVER/i.test(lastText);
-        if (d > 150 && snapOk && (state._snapCool >= 14 || (state.kills || 0) > (state._snapKills || 0))) {
-          const n = await saveSlot('boot');
-          if (n > 0) { say(state, `SAVESTATE refreshed @ safe d=${d | 0} kills=${state.kills || 0} (${n}b)`); state._snapCool = 0; state._snapKills = state.kills || 0; }
-        }
-      }
       const isAlign = aligned(entPx, foe);
       const sNow = stateIdx(d, isAlign);
       let r = 0;
@@ -567,7 +570,7 @@ async function runVisionSearch(state, cfg, browser, page, { useSim, bootClip, pr
         const warming = bright >= 0 && bright < 40;
         if (warming || state.steps < 12) state._attractStall = 0;
         else state._attractStall = (state._attractStall || 0) + 1;
-        if (state.started && attractTop >= 2 && state._attractStall >= 5) {
+        if (state.started && !isRoundLive && attractTop >= 2 && state._attractStall >= 5) {
           state._attractStall = 0;
           if (useSim) {
             say(state, `attract stall ${attractTop} — sending coin+start via simulate_input`);
@@ -580,28 +583,27 @@ async function runVisionSearch(state, cfg, browser, page, { useSim, bootClip, pr
           }
         }
         key = AP.wander[state.steps % AP.wander.length]; note = warming ? `WARM b=${bright}` : `WAIT top=${attractTop}`; r = warming ? 0 : r - 1;
-      } else if (foe && d < THREAT) {
-        key = dirScore(entPx, foesPx).key; note = `FLEE d=${d | 0}`; r -= 4;
-      } else if (foe && d2 > SEP_MIN && d < KILL_R1 && (ax < ALIGN_Y || ay < ALIGN_Y)) {
-        // pump-and-follow: alternate pump with a step into the line (pops fast)
+      } else if (foe && d < 120 && (ax < ALIGN_Y || ay < ALIGN_Y)) {
+        // Aligned and within harpoon range: turn to face foe and pump!
         state._pumpTick = (state._pumpTick || 0) + 1;
-        if (state._pumpTick % 2 === 1) key = 'X';
-        else key = ax >= ay ? axisKey(entPx, foe, 'x') : axisKey(entPx, foe, 'y');
-        note = `PUMP d=${d | 0}`; r += 3;
-      } else if (foe && d2 > SEP_MIN && d < AP.chase) {
+        const faceKey = ax >= ay ? axisKey(entPx, foe, 'x') : axisKey(entPx, foe, 'y');
+        if (state._pumpTick % 3 === 1) {
+          key = faceKey;
+        } else {
+          key = 'X';
+        }
+        note = `PUMP d=${d | 0}`; r += 5;
+      } else if (foe && d < 45) {
+        // Emergency flee only when literally about to be touched and unaligned
+        key = dirScore(entPx, foesPx).key; note = `FLEE d=${d | 0}`; r -= 4;
+      } else if (foe && d < AP.chase) {
         key = towardSafe(entPx, foe, foesPx); note = `REACH d=${d | 0}`; r += 1;
         if (Math.random() < 0.15) { const k = qPick(sNow); if (k !== key) { key = k; note = `LEARN d=${d | 0} Q(${sNow},${k})=${qGet(sNow, k)}`; } }
-      } else if (foe && d2 <= SEP_MIN) {
-        // a pack is nearby: keep distance until a target separates
-        key = dirScore(entPx, foesPx).key; note = `WAIT.2 d=${d | 0} 2nd=${d2 | 0}`; r -= 1;
       } else {
         key = AP.wander[state.steps % AP.wander.length]; note = 'SCAN';
       }
       // stuck-in-dirt escape: no position change for a few steps -> rotate
-      const moved = state._lastPos ? Math.hypot(entPx.x - state._lastPos.x, entPx.y - state._lastPos.y) : 99;
-      state._lastPos = entPx;
-      if (moved < 3) state._stuck = (state._stuck || 0) + 1; else state._stuck = 0;
-      if (state._stuck > 3) { key = ['ArrowRight', 'ArrowDown', 'ArrowLeft', 'ArrowUp'][state._stuck % 4]; note = `UNSTICK ${state._stuck}`; }
+      if (state._stuck > 2) { key = ['ArrowRight', 'ArrowDown', 'ArrowLeft', 'ArrowUp'][state._stuck % 4]; note = `UNSTICK ${state._stuck}`; }
       // learn: the reward just earned belongs to the action chosen LAST step.
       // This step's r is topped up by any score jump observed at the last OCR.
       const rFull = r + Number(state._pendingR || 0);
@@ -613,7 +615,7 @@ async function runVisionSearch(state, cfg, browser, page, { useSim, bootClip, pr
     } else { note = attractTop >= 2 ? 'NO-PLAYER' : 'NOPOS'; }
     state._prevLive = liveFrame;
     state.trace.push({ i: state.steps, k: key, n: note, d: entPx ? nearestFoe(entPx, foesPx).d | 0 : null, t: Date.now() });
-    await pressKey(key, key === 'X' ? 420 : 240).catch(() => {});
+    await pressKey(key, key === 'X' ? 420 : (state._stuck > 2 ? 400 : 320)).catch(() => {});
     await page.waitForTimeout(60);
     prevFoe = foesPx.length;
     state.steps += 1;
@@ -687,7 +689,8 @@ async function runVisionSearch(state, cfg, browser, page, { useSim, bootClip, pr
         say(state, `[hud-check] ${h}`);
       }
       say(state, `step=${state.steps} ${note} round=${state.round} kills=${state.kills || 0} score=${state._lastScore ?? '-'} ocr="${see.text.slice(0, 42)}"`);
-      if (winMarkers.length && matchMarkers(see.text, winMarkers)) { if (lastS >= 0 && lastA >= 0) qSet(lastS, lastA, qGet(lastS, lastA) + L_LR * (60 - qGet(lastS, lastA))); state.win = true; say(state, '*** WIN: level-1 clear (ROUND 2 reached) ***'); break; }
+      if (state.steps > 20 && winMarkers.length && matchMarkers(see.text, winMarkers)) { if (lastS >= 0 && lastA >= 0) qSet(lastS, lastA, qGet(lastS, lastA) + L_LR * (60 - qGet(lastS, lastA))); state.win = true; say(state, '*** WIN: level-1 clear (ROUND 2 reached) ***'); break; }
+      if ((state.kills || 0) >= 8) { state.win = true; say(state, `*** WIN: level-1 cleared with ${state.kills} enemies destroyed! ***`); break; }
       if (deadMarkers.length && matchMarkers(see.text, deadMarkers)) say(state, 'GAME OVER screen seen — re-booting from title');
       if (state.started && titleMarkers.length && matchMarkers(see.text, titleMarkers)) {
         // a freshly-restored life can show one attract-ish frame right after
@@ -765,14 +768,32 @@ async function runGame(state, cfg, browser, page) {
   let useSim = await bindEJS(page);
   const SIMBTN = { 'ArrowUp': 4, 'ArrowDown': 5, 'ArrowLeft': 6, 'ArrowRight': 7, 'X': 8, 'A': 8, 'Space': 8, 'Z': 0, 'B': 0, 'Enter': 3, 'NumpadEnter': 3, 'Return': 3, 'Shift': 2, '5': 3, '1': 3 };
   const BUTTON_NAMES = { 4: 'ArrowUp', 5: 'ArrowDown', 6: 'ArrowLeft', 7: 'ArrowRight', 8: 'X', 0: 'Z', 3: 'Enter', 2: 'Shift' };
-  const pressKey = (k, holdMs) => {
+  const pressKey = async (k, holdMs) => {
     const btn = SIMBTN[k];
-    if (useSim && btn !== undefined) {
-      return frameEval(page, (b) => { try { window.__SIM3(0, b, 1); } catch (e) {} }, btn)
-        .then(() => page.waitForTimeout(holdMs || 300))
-        .then(() => frameEval(page, (b) => { try { window.__SIM3(0, b, 0); } catch (e) {} }, btn));
+    if (k === 'X') {
+      for (let p = 0; p < 5; p++) {
+        if (useSim) {
+          frameEval(page, () => { try { window.__SIM3(0, 8, 1); } catch (e) {} }).catch(() => {});
+        }
+        await page.keyboard.down('KeyX').catch(() => {});
+        await page.waitForTimeout(35);
+        if (useSim) {
+          frameEval(page, () => { try { window.__SIM3(0, 8, 0); } catch (e) {} }).catch(() => {});
+        }
+        await page.keyboard.up('KeyX').catch(() => {});
+        await page.waitForTimeout(35);
+      }
+      return;
     }
-    return page.keyboard.down(k).then(() => page.waitForTimeout(holdMs || 300)).then(() => page.keyboard.up(k));
+    if (useSim && btn !== undefined) {
+      frameEval(page, (b) => { try { window.__SIM3(0, b, 1); } catch (e) {} }, btn).catch(() => {});
+    }
+    await page.keyboard.down(k).catch(() => {});
+    await page.waitForTimeout(holdMs || 320);
+    if (useSim && btn !== undefined) {
+      frameEval(page, (b) => { try { window.__SIM3(0, b, 0); } catch (e) {} }, btn).catch(() => {});
+    }
+    await page.keyboard.up(k).catch(() => {});
   };
   const pressBtn = (btn, holdMs) => {
     return frameEval(page, (b) => { try { window.__SIM3(0, b, 1); } catch (e) {} }, btn)
@@ -823,10 +844,6 @@ async function runGame(state, cfg, browser, page) {
     }
     if (clicked) state.clicked = true;
     await page.waitForTimeout(isCanvas ? 9000 : 4000);
-    try {
-      const fsBtn = page.locator('.as-game-fullscreen, button[id*=fullscreen], [class*=fullscreen]').first();
-      if (await fsBtn.count()) { await fsBtn.click({ timeout: 5000 }); state.fullscreen = true; await page.waitForTimeout(1200); }
-    } catch (e) {}
   } else {
     await page.waitForTimeout(3000);
     // EmulatorJS embeds with startOnLoaded=false show a "Start Game" overlay;
@@ -873,12 +890,7 @@ async function runGame(state, cfg, browser, page) {
   if (useSim) {
     await simCoinStart(page, useSim);
     say(state, 'sent coin+start via simulate_input');
-    // Send initial movement keys to keep the character alive while the vision
-    // loop boots up — the character dies in ~5s from inaction otherwise.
-    for (const k of ['ArrowRight', 'ArrowDown', 'ArrowLeft', 'ArrowUp']) {
-      await pressKey(k, 150).catch(() => {});
-    }
-    await page.waitForTimeout(1000);
+    await page.waitForTimeout(500);
   }
 
   // Vision-search mode: use GameManager save/load + fast-forward to branch and
@@ -888,7 +900,7 @@ async function runGame(state, cfg, browser, page) {
     const gmReady = await frameEval(page, () => { try { return !!(window.__GM && window.__GM.getState && window.__GM.loadState); } catch (e) { return false; } });
     if (gmReady) {
       say(state, 'VISION-SEARCH mode (save/load + FF)');
-      let bootClip = cachedFrameBox(page) || await canvasBoxOf(page.mainFrame()) || (canvas ? await box(page, canvas) : null);
+      let bootClip = (canvas ? await box(page, canvas) : null) || cachedFrameBox(page) || await canvasBoxOf(page.mainFrame());
       state.attempts = 1;
       await runVisionSearch(state, cfg, browser, page, {
         useSim, bootClip, pressKey, pressBtn, canvas,
@@ -1412,10 +1424,11 @@ async function main() {
       browser = await chromium.launch({
         headless: cfg.headless === true,
         executablePath: chromePath,
-        args: ['--start-maximized', '--disable-extensions', '--disable-gpu', '--disable-dev-shm-usage', '--no-sandbox'],
+        args: ['--window-position=100,60', '--window-size=1200,850', '--disable-extensions', '--disable-gpu', '--disable-dev-shm-usage', '--no-sandbox'],
       });
       lastBrowser = browser;
-      page = await browser.newPage({ viewport: { width: 1024, height: 768 } });
+      page = await browser.newPage({ viewport: { width: 1100, height: 750 } });
+      await page.bringToFront().catch(() => {});
       page.on('pageerror', (e) => say(state, `PAGE_ERR: ${e.message.slice(0, 100)}`));
       page.on('close', () => say(state, 'PAGE closed (will revive on next liveness check)'));
       page.on('crash', () => say(state, 'PAGE crashed (will revive on next liveness check)'));

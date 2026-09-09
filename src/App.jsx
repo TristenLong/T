@@ -941,7 +941,7 @@ function App() {
   const stripDirective = (raw) =>
     (String(raw || '').replace(/^(?:please\s+)?(?:can\s+you\s+)?(?:find|search(?:\s+(?:for|up))?|look\s+up|lookup|google|browse|open|download|watch|play|buy|get|show\s+me)\s+(?:a|an|the|me|us)?\s*/i, '') || String(raw || '')).trim();
 
-  const webIntentRe = /(?:find|search|look\s*up|lookup|google|browse|open|download|watch|play|buy|get)\b[^\n]*\b(?:online|free|web|website|site|url|link|browser|share|game|movie|video)\b|https?:\/\/\S+/i;
+  const webIntentRe = /(?:find|search|look\s*up|lookup|google|browse|open|download|watch|play|buy|get|beat|win)\b[^\n]*\b(?:online|free|web|website|site|url|link|browser|share|game|movie|video|dig[-\s]*dug|lvl|level|round|stage)\b|\b(?:dig[-\s]*dug|pac[-\s]*man|galaga)\b|https?:\/\/\S+/i;
 
   // "Play it with my screen", "open dig dug in my browser", "use the mouse" ->
   // auto-pick the BEST source, open it for real, and drive the mouse to start.
@@ -1001,7 +1001,10 @@ function App() {
   // watches OCR for ROUND 2 -> level clear, then poll the status route.
   const manifestAutopilotFromRoundtable = async (content = '', topic) => {
     const raw = String(topic || content || '').trim().replace(/[.!?]+$/, '');
-    const query = stripDirective(raw);
+    let query = stripDirective(raw);
+    if (/\bdig[-\s]*dug\b/i.test(raw)) query = 'dig-dug';
+    else if (/\bpac[-\s]*man\b/i.test(raw)) query = 'pac-man';
+    else if (/\bgalaga\b/i.test(raw)) query = 'galaga';
     const goalMatch = (raw.match(/(?:till|until|when)\s+(?:(?:it|you|we)?\s*)?(?:win|beats?|clears?|finish(?:es)?)\s*(?:(?:level|round|stage)\s*\d+|the\s+game|it)?\b/i)
       || raw.match(/beat\s+((?:level|round|stage)\s*\d+|it|the\s+game)/i)
       || raw.match(/win(?:\s+(?:level|round|stage))?\s*\d+\b/i)
@@ -1178,8 +1181,14 @@ function App() {
           setResponse(prev => `${prev}\n\n[DREAM CORE] Dispatching image backend...`);
           manifestImageFromRoundtable(cleanTopic);
         } else if (!/(?:^|\s)https?:\/\/\S+/i.test(cleanTopic) && escortRe.test(cleanTopic)) {
-          setResponse(prev => `${prev}\n\n[WEB DRIVE] Dispatching play escort — opening best source + mouse drive...`);
-          manifestPlayEscortFromRoundtable(cleanTopic);
+          const isAutopilot = /(?:autopilot|autoplay|pilot)\b/i.test(cleanTopic) || /till\b|\bbeat\b|\bwin\b|(?:level|round|stage)\s*\d+/i.test(cleanTopic);
+          if (isAutopilot) {
+            setResponse(prev => `${prev}\n\n[WEB PILOT] Engaging autonomous agent to play and beat the game...`);
+            manifestAutopilotFromRoundtable('', cleanTopic);
+          } else {
+            setResponse(prev => `${prev}\n\n[WEB DRIVE] Dispatching play escort — opening best source + mouse drive...`);
+            manifestPlayEscortFromRoundtable(cleanTopic);
+          }
         } else if (webIntentRe.test(cleanTopic)) {
           setResponse(prev => `${prev}\n\n[WEB SCOUT] Searching the web...`);
           manifestWebLookupFromRoundtable(cleanTopic);
@@ -1272,7 +1281,7 @@ function App() {
       setIsSwarmDeliberating(true);
       const isEscort = !/(?:^|\s)https?:\/\/\S+/i.test(trimmed) && escortRe.test(trimmed);
       const isAutopilot = !/(?:^|\s)https?:\/\/\S+/i.test(trimmed)
-        && /(?:autopilot|autoplay|pilot)\b/i.test(trimmed) || /till\b|\bbat\b|\bwin(?:\s+(?:level|round|stage))?\s*\d*\b|\bbeat(?:\s+(?:level|round|stage|it|the\s+game))?/i.test(trimmed);
+        && (/(?:autopilot|autoplay|pilot)\b/i.test(trimmed) || /till\b|\bbat\b|\bwin(?:\s+(?:level|round|stage))?\s*\d*\b|\bbeat(?:\s+(?:level|round|stage|it|the\s+game))?/i.test(trimmed) || (/\bdig[-\s]*dug\b/i.test(trimmed) && /\b(?:play|beat|win)\b/i.test(trimmed)));
       setResponse(isEscort
         ? (isAutopilot
           ? `[WEB PILOT]\nDirective: "${trimmed}"\nEngaging autopilot to play and report the win...`
