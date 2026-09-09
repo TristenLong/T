@@ -19,8 +19,10 @@ w, h = a.size
 pa, pb = a.load(), b.load()
 cw, ch = w / 100.0, h / 100.0
 
-# band: skip HUD text at very top and very bottom, keep caves + playfield
-Y0, Y1 = int(h * 0.09), int(h * 0.88)
+# band: only the cave/playfield (y 22-88%). The top 8-22% holds the score HUD in
+# live play and the character/name table on attract screens (which pollutes the
+# enemy reads); enemies cannot exist above ~y22% in round 1.
+Y0, Y1 = int(h * 0.22), int(h * 0.88)
 
 def is_player(r, g, b):
     return r > 150 and g < 90 and b < 90 and (r - g) > 140
@@ -62,6 +64,18 @@ def clusters(ps, gap=40, min_n=6):
 
 n = lambda c: {"x": round(c[0] / cw, 1), "y": round(c[1] / ch, 1), "n": int(c[2])}
 
+# attract/name-table indicator: enemy+player clutter ABOVE the cave
+tt, te = [], []
+for y in range(int(h * 0.08), Y0, 2):
+    for x in range(0, w, 2):
+        c = pa[x, y]
+        if is_player(*c):
+            tt.append((x, y))
+        elif is_enemy(*c):
+            te.append((x, y))
+topEnemies = clusters(te, gap=40, min_n=15)
+topPlayers = clusters(tt, gap=35, min_n=40)
+
 base = collect(pa, {"p": is_player, "e": is_enemy})
 post = collect(pb, {"p": is_player, "e": is_enemy})
 bp = clusters(base["p"], gap=35, min_n=40)   # player = biggest strict-orange cluster
@@ -92,4 +106,6 @@ print(json.dumps({
     "enemies": [n(c) for c in pe],
     "movingEnemies": [n(c) for c in oec],
     "moving": len(orange_diff) + len(enemy_diff),
+    "topEnemies": [n(c) for c in topEnemies],
+    "attractTop": len(topEnemies) + len(topPlayers),
 }))

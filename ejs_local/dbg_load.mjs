@@ -1,0 +1,12 @@
+import { chromium } from 'playwright';
+const BASE = 'http://127.0.0.1:8801/';
+const chromePath = 'C:/Users/trist/AppData/Local/ms-playwright/chromium-1234/chrome-win64/chrome.exe';
+const browser = await chromium.launch({ headless: true, executablePath: chromePath, args: ['--enable-unsafe-swiftshader', '--disable-extensions'] });
+const page = await browser.newPage({ viewport: { width: 960, height: 540 } });
+page.on('request', (r) => { const u = r.url(); if (/data|rom|bios/.test(u)) console.log('REQ', r.url()); });
+page.on('response', (r) => { const u = r.url(); if (/data|rom|bios/.test(u)) console.log('RES', r.status(), r.url()); });
+page.on('console', (m) => console.log('CONSOLE[' + m.type() + ']', m.text().slice(0, 400)));
+page.on('pageerror', (e) => console.log('PAGE_ERR\n' + (e.stack || String(e)).slice(0, 700)));
+await page.goto(BASE, { waitUntil: 'domcontentloaded', timeout: 60000 }).catch((e) => console.log('goto err', e.message));
+await page.waitForTimeout(9000);
+await browser.close();

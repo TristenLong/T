@@ -1,13 +1,52 @@
 import { chromium } from 'playwright';
 import fs from 'fs';
 import path from 'path';
-import { execFileSync } from 'child_process';
+import net from 'net';
+import { execFileSync, spawn } from 'child_process';
 
 const chromePath = 'C:/Users/trist/AppData/Local/ms-playwright/chromium-1234/chrome-win64/chrome.exe';
 const venvPy = 'C:/Users/trist/gemini-voice-assistant/GOD_HAND_CORE/.venv/Scripts/python.exe';
 const ocrPy = 'C:/Users/trist/gemini-voice-assistant/ocr_crop.py';
 const tesseractPath = 'C:/Program Files/Tesseract-OCR';
 const tmp = 'C:/Users/trist/AppData/Local/Temp/opencode';
+
+// persistent dd_diff server: keeps the python analysis process alive so the
+// autopilot can act at near game-frame rate instead of ~1s per step of process
+// startup. Reused across attempts/browsers; re-spawns if it dies.
+let diffSrv = null;
+let diffLineQ = [];
+let diffBuf = '';
+async function diffOne(pngPath) {
+  if (!diffSrv || diffSrv.exitCode !== null) {
+    diffSrv = spawn(venvPy, ['C:/Users/trist/gemini-voice-assistant/dd_diff_srv.py'], { stdio: ['pipe', 'pipe', 'inherit'], windowsHide: true });
+    diffSrv.stdout.on('data', (d) => {
+      diffBuf += d.toString();
+      let i;
+      while ((i = diffBuf.indexOf('\n')) >= 0) {
+        const line = diffBuf.slice(0, i).trim(); diffBuf = diffBuf.slice(i + 1);
+        if (!line) continue;
+        const r = diffLineQ.shift();
+        if (r) { const tag = line.slice(0, 3), js = line.slice(3); r(tag === 'OK ' ? JSON.parse(js) : null); }
+      }
+    });
+    diffSrv.on('exit', () => { diffSrv = null; const q = diffLineQ; diffLineQ = []; q.forEach((r) => r(null)); });
+  }
+  try {
+    const buf = fs.readFileSync(pngPath);
+    diffSrv.stdin.write(buf.length + '\n');
+    diffSrv.stdin.write(buf);
+    const ans = await new Promise((res) => {
+      diffLineQ.push(res);
+      setTimeout(() => { const i = diffLineQ.indexOf(res); if (i >= 0) { diffLineQ.splice(i, 1); res(null); } }, 8000);
+    });
+    if (ans) return ans;
+  } catch (e) {}
+  // fallback: the slow but reliable one-shot path
+  try {
+    const js = execFileSync(venvPy, ['C:/Users/trist/gemini-voice-assistant/dd_diff.py', pngPath, pngPath], { encoding: 'utf8', timeout: 20000 });
+    return JSON.parse(js.trim());
+  } catch (e) { return null; }
+}
 
 // ---------------------------------------------------------------------------
 // Per-game knowledge registry (controls, boot/win/death markers, movement policy)
@@ -27,6 +66,7 @@ const GAME_REGISTRY = {
       'https://www.retrogames.cc/embed/21051-dig-dug-japan.html',
       'https://www.retrogames.cc/nes-games/dig-dug-japan.html',
       'https://www.retrogames.cc/embed/33379-dig-dug-rev-2.html',
+      'http://127.0.0.1:8801/',
     ],
   },
   'pac-man': {
@@ -154,6 +194,8 @@ function roundFromText(text) {
 async function runVisionSearch(state, cfg, browser, page, { useSim, bootClip, pressKey, pressBtn, canvas, startKeys, titleMarkers, winMarkers, deadMarkers, strategy, keys, maxSteps }) {
   const g = cfg.game || {};
   let clip = bootClip;
+  if (clip) say(state, `CLIP ${Math.round(clip.width)}x${Math.round(clip.height)} @${Math.round(clip.x)},${Math.round(clip.y)}`);
+  else say(state, 'CLIP NULL — using full-page screenshots');
   let started = state.started;
 
   // emulator liveness / browser crash survival: if the page or the EJS canvas
@@ -190,6 +232,15 @@ async function runVisionSearch(state, cfg, browser, page, { useSim, bootClip, pr
     const sim = await bindEJS(page);
     clip = cachedFrameBox(page);
     if (!sim || !clip) { say(state, 'revive: no EJS/canvas after reload'); return false; }
+    // Direct coin+start via simulate_input
+    await simCoinStart(page, useSim).catch(() => {});
+    say(state, 'revive: sent coin+start via simulate_input');
+    // savestate fast-resume: page reloaded, restore the last gameplay snapshot
+    if (useStates) {
+      const ok = await loadSlot('boot');
+      if (ok > 0) { started = true; state.started = true; say(state, `revived via savestate (attempt ${state.attempts})`); return true; }
+      say(state, 'savestate restore failed on revive — falling back to key boot');
+    }
     for (let b2 = 0; b2 < 10; b2++) {
       await pressKey(startKeys[b2 % startKeys.length], 400).catch(() => {});
       await pressKey('X', 350).catch(() => {});
@@ -222,6 +273,17 @@ async function runVisionSearch(state, cfg, browser, page, { useSim, bootClip, pr
     } catch (e) { return null; }
   };
 
+  // GameManager savestate flow (research lever): snapshot a fresh round-1 state
+  // right after boot, then loadState it back on death / infra-crash instead of
+  // the fragile OCR key re-boot. Q-learning death punishment still fires first.
+  const stateApi = async () => { try { return await frameEval(page, () => { try { return !!(window.__GM && typeof window.__GM.loadState === 'function' && typeof window.__SAVESLOT === 'function' && typeof window.__LOADSLOT === 'function'); } catch (e) { return false; } }).catch(() => false); } catch (e) { return false; } };
+  const saveSlot = async (k) => { try { return await frameEval(page, (k) => { try { return window.__SAVESLOT(k); } catch (e) { return -1; } }, k).catch(() => -1); } catch (e) { return -1; } };
+  const loadSlot = async (k) => { try { return await frameEval(page, (k) => { try { return window.__LOADSLOT(k); } catch (e) { return 0; } }, k).catch(() => 0); } catch (e) { return 0; } };
+  const setFlow = async (which) => { await frameEval(page, (w) => { try { if (w === 'slow') window.__SLOW(true); else if (w === 'normal') window.__SLOW(false); else if (w === 'pause') window.__PAUSE(true); else if (w === 'resume') window.__PAUSE(false); } catch (e) {} }, which).catch(() => {}); };
+  let useStates = await stateApi();
+  const wantSlow = g.slowMotion === true;
+  let slowOn = false;
+
 // --- BOOT (same as runGame). No fast-forward: on EJS 4.x it freezes frames
   // and paints a "Fast-Forward. = ..." overlay that pollutes OCR.
   let boot = 0;
@@ -238,6 +300,18 @@ async function runVisionSearch(state, cfg, browser, page, { useSim, bootClip, pr
   }
   if (!state.started) { say(state, 'BOOT FAILED'); return; }
   say(state, 'GAME STARTED — survival autopilot (play through round 1)');
+
+  // research lever: fresh round-1 restart point (savestate re-boots instead of
+  // OCR key-mashing) + optional slow-motion decision headroom (0.5x).
+  // Defer the snapshot until the vision loop confirms live play (player found),
+  // so we don't save an attract/demo frame as the "boot" restore point.
+  let _deferredSnap = true;
+  if (useStates && g.useSavestates !== false) {
+    const n = await saveSlot('boot');
+    if (n > 0) { say(state, `SAVESTATE saved boot snapshot (${n} bytes) — deaths restore instantly`); _deferredSnap = false; }
+    else { useStates = false; say(state, 'savestate API unavailable — falling back to OCR key re-boot'); }
+  }
+  if (wantSlow) { await setFlow('slow'); slowOn = true; say(state, 'slow-motion engaged (0.5x)'); }
 
   // Autopilot parameters: hand-overridden in cfg.game.autopilot, or seeded from
   // a gameplay-research notes file (written by mode:'research') so later runs
@@ -258,7 +332,7 @@ async function runVisionSearch(state, cfg, browser, page, { useSim, bootClip, pr
   // forward continuously (no loadState rewinds), so a life actually progresses
   // toward clearing the round. On death we re-boot from the title and keep trying
   // until ROUND 2 (level-1 clear) or maxSteps.
-  const snapshot = async (png) => (png ? await diffOf(png, png) : null);
+  const snapshot = async (png) => (png ? await diffOne(png) : null);
   // dd_diff returns 0..100 normalized coords; convert to canvas pixels so the
   // danger/chase/pump thresholds match the sprite and tunnel sizing.
   const toPx = (p) => (clip ? { x: (p.x / 100) * clip.width, y: (p.y / 100) * clip.height } : p);
@@ -269,6 +343,19 @@ async function runVisionSearch(state, cfg, browser, page, { useSim, bootClip, pr
     return { foe: t, d: m };
   };
   const aligned = (px, foe) => (px && foe ? Math.abs(px.x - foe.x) < AP.align || Math.abs(px.y - foe.y) < 30 : false);
+  // move along one axis toward the foe (x -> left/right, y -> up/down)
+  const axisKey = (px, foe, ax) => { const v = ax === 'x' ? foe.x - px.x : foe.y - px.y; return ax === 'x' ? (v > 0 ? 'ArrowRight' : 'ArrowLeft') : (v > 0 ? 'ArrowDown' : 'ArrowUp'); };
+  // run away from the centroid of all foes, alternating axes so we don't ping-pong
+  const smartFlee = (px, foes) => {
+    const c = foes.reduce((a, f) => [a[0] + f.x, a[1] + f.y], [0, 0]);
+    const cx = c[0] / foes.length, cy = c[1] / foes.length;
+    const vx = px.x - cx, vy = px.y - cy;
+    const prim = Math.abs(vx) >= Math.abs(vy) ? 'x' : 'y';
+    if (state._lastAxis !== prim) { state._lastAxis = prim; return axisKey(px, { x: cx, y: cy }, prim); }
+    const alt = prim === 'x' ? 'y' : 'x';
+    if (Math.abs(alt === 'y' ? vy : vx) > 6) { state._lastAxis = alt; return axisKey(px, { x: cx, y: cy }, alt); }
+    return axisKey(px, { x: cx, y: cy }, prim);
+  };
   const fleeKey = (px, foes) => {
     const cands = [['ArrowLeft', -16, 0], ['ArrowRight', 16, 0], ['ArrowUp', 0, -16], ['ArrowDown', 0, 16]];
     let bestKey = 'ArrowLeft', bestScore = -Infinity;
@@ -282,6 +369,45 @@ async function runVisionSearch(state, cfg, browser, page, { useSim, bootClip, pr
   const towardKey = (px, foe) => { const dx = foe.x - px.x, dy = foe.y - px.y; return Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'ArrowRight' : 'ArrowLeft') : (dy > 0 ? 'ArrowDown' : 'ArrowUp'); };
   // player P1 score from HUD text (OCR reads 0 as 'o', 1 as 'i'/'l')
   const scoreOf = (t) => { const m = (t || '').replace(/[oO]+/g, '0').replace(/[iIl|]/g, '1').match(/SCORE\s+([0-9]{3,7})\s+([0-9]{2,7})/i); return m ? parseInt(m[2], 10) : null; };
+  // --- arena-aware movement helpers (canvas px) -------------------------------
+  // keep decisions inside the cave: rounds ~y24-86%, x>=42px from the edges; a
+  // tunnel tile is ~38px so a 18px step is a conservative feel-ahead.
+  const P_W = clip ? clip.width : 960, P_H = clip ? clip.height : 540;
+  const P_CX = P_W / 2;
+  const P_TOP = P_H * 0.24, P_BOT = P_H * 0.86, P_EDGE = 44;
+  const DIRS4 = [['ArrowLeft', -1, 0], ['ArrowRight', 1, 0], ['ArrowUp', 0, -1], ['ArrowDown', 0, 1]];
+  // score every candidate direction: separation from foes, center pull, wall penalty
+  const dirScore = (px, foes) => {
+    let bestK = 'ArrowLeft', bestS = -Infinity, bestD = Infinity;
+    for (const [k, dx, dy] of DIRS4) {
+      const nx = px.x + dx * 18, ny = px.y + dy * 18;
+      let pen = 0;
+      if (nx < P_EDGE || nx > P_W - P_EDGE) pen += 130;
+      if (ny < P_TOP || ny > P_BOT) pen += 130;
+      let m = Infinity;
+      for (const f of foes || []) m = Math.min(m, Math.hypot(nx - f.x, ny - f.y));
+      const s = Math.min(m, 200) - pen - (Math.abs(nx - P_CX) / P_W) * 220;
+      if (s > bestS) { bestS = s; bestK = k; bestD = m; }
+    }
+    return { key: bestK, gain: bestD };
+  };
+  // advance toward `foe` while dodging walls and crowding by a second enemy
+  const towardSafe = (px, foe, foes) => {
+    const dx = foe.x - px.x, dy = foe.y - px.y;
+    const cand = DIRS4.map(([k, sdx, sdy]) => {
+      const axGain = (sdx === 0 ? 0 : (sdx === Math.sign(dx) ? Math.abs(dx) : -Math.abs(dx))) +
+                     (sdy === 0 ? 0 : (sdy === Math.sign(dy) ? Math.abs(dy) : -Math.abs(dy)));
+      return [k, sdx, sdy, axGain];
+    }).sort((a, b) => b[3] - a[3]);
+    for (const [k, sdx, sdy] of cand) {
+      const nx = px.x + sdx * 18, ny = px.y + sdy * 18;
+      if (nx < P_EDGE || nx > P_W - P_EDGE || ny < P_TOP || ny > P_BOT) continue;
+      let ok = true;
+      for (const f of foes || []) { if (f !== foe && Math.hypot(nx - f.x, ny - f.y) < 46) { ok = false; break; } }
+      if (ok) return k;
+    }
+    return dirScore(px, foes).key;
+  };
   // live AI HUD overlay: injected into the host page (top frame). Fixed to the
 // viewport bottom-left (below the 960x480 canvas) so it never enters the OCR
 // clip and is always visible in the game window.
@@ -337,6 +463,48 @@ async function runVisionSearch(state, cfg, browser, page, { useSim, bootClip, pr
   };
   const deathPunish = () => { if (lastS >= 0 && lastA >= 0) qSet(lastS, lastA, qGet(lastS, lastA) + L_LR * (-80 - qGet(lastS, lastA))); };
   let lastS = -1, lastA = -1, prevFoe = 0, lastD = null;
+  state._prevLive = false;
+
+  // all lives spent: reload + reboot a fresh game in the SAME page so the AI
+  // keeps visibly playing instead of leaving the ROM sitting on the attract
+  // screen after the budget is used up.
+  const relaunchGame = async () => {
+    try { await page.goto(g.__activeUrl || g.url, { waitUntil: 'domcontentloaded', timeout: 60000 }); } catch (e) { say(state, `relaunch goto failed: ${String(e.message || e).slice(0, 80)}`); return false; }
+    await page.waitForTimeout(3000);
+    for (let i = 0; i < 40; i++) {
+      const got = await frameEval(page, () => { try { return !!(window.EJS_emulator && document.querySelector('canvas.ejs_canvas')); } catch (e) { return false; } }).catch(() => false);
+      if (got) break;
+      await page.waitForTimeout(2000);
+    }
+    if (!(await bindEJS(page))) { say(state, 'relaunch: rebind failed'); return false; }
+    clip = cachedFrameBox(page);
+    // Direct coin+start via simulate_input — bypasses DOM button click
+    if (useSim) { await simCoinStart(page, useSim); say(state, 'relaunch: sent coin+start via simulate_input'); }
+    else { await clickEJSStart(page).catch(() => {}); say(state, 'relaunch: clicked Start (post-core)'); }
+    for (let i = 0; i < 40; i++) {
+      const rrc = await perceive(state, page, clip, 'relaunch').catch(() => null);
+      if (rrc) {
+        const rtop = (rrc.ent && rrc.ent.attractTop) || 0;
+        if (!/CHARACTER|POOKA|FYGAR|BEST\s*SCORE|INSERT\s*COIN/i.test(rrc.text || '') && rtop < 2) { say(state, `relaunch: live (top=${rtop})`); break; }
+        say(state, `relaunch: waiting on screen (top=${rtop})`);
+      }
+      if (state.steps > 0 && i % 8 === 7) await clickEJSStart(page).catch(() => {});
+      await page.waitForTimeout(2200);
+    }
+    for (let b3 = 0; b3 < 10; b3++) {
+      await pressKey(startKeys[b3 % startKeys.length], 400).catch(() => {});
+      await pressKey('X', 350).catch(() => {});
+      await page.waitForTimeout(1200);
+      const rc = await perceive(state, page, clip, 'relaunch');
+      if (!titleMarkers.length || !matchMarkers(rc.text, titleMarkers)) break;
+    }
+    state.lives = 0; state.steps = 0; state.round = null; state._snapMid = false;
+    prevFoe = 0; lastD = null; lastS = -1; lastA = -1; state._pendingR = 0;
+    state.started = true; started = true;
+    if (useStates) { await saveSlot('boot'); }
+    say(state, `fresh game relaunched — continuing (game #${state.games})`);
+    return true;
+  };
 
   while (state.steps < maxSteps && !state.win) {
     // survive page/emulator crashes so a life isn't killed by infrastructure
@@ -350,24 +518,90 @@ async function runVisionSearch(state, cfg, browser, page, { useSim, bootClip, pr
     const entPx = ent && ent.basePlayer ? toPx(ent.basePlayer) : null;
     const foesPx = (ent && ent.baseEnemies ? ent.baseEnemies : []).map(toPx);
     let key = 'ArrowRight', note = 'NOPOS';
+    // combat thresholds in canvas px (a tunnel tile is ~38px on the 960x480 canvas)
+    const THREAT = Math.max(AP.danger, 62);   // run before an enemy can lunge
+    const KILL_R1 = 78;                       // aligned range to start pumping
+    const ALIGN_Y = 34;                       // acceptable cross-tunnel offset
+    const SEP_MIN = 120;                      // second-enemy buffer before committing
+    const attractTop = ent ? (ent.attractTop || 0) : 99;
+    const liveFrame = !!(entPx && attractTop < 2);
+    if (liveFrame) state._attractStall = 0;
+    // Deferred snapshot: save the first confirmed live frame as the boot restore
+    // point (not the attract screen from the boot gate).
+    if (liveFrame && _deferredSnap && useStates) {
+      const n = await saveSlot('boot');
+      if (n > 0) { say(state, `SAVESTATE saved live snapshot (${n} bytes) — deaths restore instantly`); _deferredSnap = false; }
+    }
     if (entPx) {
       const { foe, d } = nearestFoe(entPx, foesPx);
+      let d2 = Infinity;
+      if (foe) for (const f of foesPx) { if (f !== foe) d2 = Math.min(d2, dist(entPx, f)); }
+      // research lever: keep the restore point refreshed at SAFE, LIVE moments
+      // (player present + no attract clutter). Death-restores then drop into a
+      // survivable spot instead of mid-combat (which re-dies in a few steps).
+      if (useStates && state.started && liveFrame) {
+        state._snapCool = (state._snapCool || 0) + 1;
+        const lastText = state.lastOcr || '';
+        const snapOk = (!titleMarkers.length || !matchMarkers(lastText, titleMarkers)) && !/CHARACTER|POOKA|FYGAR|GAME\s*OVER/i.test(lastText);
+        if (d > 150 && snapOk && (state._snapCool >= 14 || (state.kills || 0) > (state._snapKills || 0))) {
+          const n = await saveSlot('boot');
+          if (n > 0) { say(state, `SAVESTATE refreshed @ safe d=${d | 0} kills=${state.kills || 0} (${n}b)`); state._snapCool = 0; state._snapKills = state.kills || 0; }
+        }
+      }
       const isAlign = aligned(entPx, foe);
       const sNow = stateIdx(d, isAlign);
       let r = 0;
-      // confirmed kill: an enemy cluster vanished between frames
-      if (prevFoe > 0 && foesPx.length < prevFoe) { r += KILL; state.kills = (state.kills || 0) + 1; say(state, `KILL #${state.kills} at step ${state.steps}: ${prevFoe}->${foesPx.length} foes`); }
+      // confirmed kill: an enemy cluster vanished between two LIVE frames
+      if (state.steps > 3 && prevFoe > 0 && liveFrame && state._prevLive && foesPx.length > 0 && foesPx.length < prevFoe) { r += KILL; state.kills = (state.kills || 0) + 1; say(state, `KILL #${state.kills} at step ${state.steps}: ${prevFoe}->${foesPx.length} foes`); }
       // approach shaping: reward actions that closed the gap, punish widening
       if (lastD != null && foe) { const shrink = lastD - d; r += shrink > 0 ? 1 : shrink < -2 ? -1 : 0; }
       lastD = d;
-      if (d < AP.danger) { key = fleeKey(entPx, foesPx); note = `FLEE d=${d | 0}`; r -= 4; }
-      else if (isAlign && d < KILL_RANGE) {
-        // squeeze: alternate pump / push the enemy along the tunnel so it fills up
-        if (state.steps % 3 === 2) { key = towardKey(entPx, foe); note = `PRESS d=${d | 0}`; r += 2; }
-        else { key = 'X'; note = `PUMP d=${d | 0}`; r += 3; }
-      } else if (foe && d < AP.chase) { key = qPick(sNow); note = `LEARN d=${d | 0} Q(${sNow},${key})=${qGet(sNow, key)}`; }
-      else if (foe) { key = towardKey(entPx, foe); note = `SEARCH d=${d | 0}`; r += 1; }
-      else { key = AP.wander[state.steps % AP.wander.length]; note = 'SCAN'; }
+      const dx = foe ? foe.x - entPx.x : 0, dy = foe ? foe.y - entPx.y : 0;
+      const ax = Math.abs(dx), ay = Math.abs(dy);
+      if (!liveFrame) {
+        // attract/name-entry readback (or no player on screen): no combat.
+        // Black/barely-drawn frames right after a restore are the software
+        // renderer warming up — NOT attract; don't count those as a stall.
+        // If a true attract/demo persists, reload for a clean coin+start.
+        const bright = (ent && ent.bright != null) ? ent.bright : -1;
+        const warming = bright >= 0 && bright < 40;
+        if (warming || state.steps < 12) state._attractStall = 0;
+        else state._attractStall = (state._attractStall || 0) + 1;
+        if (state.started && attractTop >= 2 && state._attractStall >= 5) {
+          state._attractStall = 0;
+          if (useSim) {
+            say(state, `attract stall ${attractTop} — sending coin+start via simulate_input`);
+            await simCoinStart(page, useSim);
+            await page.waitForTimeout(4000);
+          } else {
+            say(state, `attract stall ${attractTop} — reloading for a fresh coin+start`);
+            const ok = await relaunchGame();
+            if (ok) continue;
+          }
+        }
+        key = AP.wander[state.steps % AP.wander.length]; note = warming ? `WARM b=${bright}` : `WAIT top=${attractTop}`; r = warming ? 0 : r - 1;
+      } else if (foe && d < THREAT) {
+        key = dirScore(entPx, foesPx).key; note = `FLEE d=${d | 0}`; r -= 4;
+      } else if (foe && d2 > SEP_MIN && d < KILL_R1 && (ax < ALIGN_Y || ay < ALIGN_Y)) {
+        // pump-and-follow: alternate pump with a step into the line (pops fast)
+        state._pumpTick = (state._pumpTick || 0) + 1;
+        if (state._pumpTick % 2 === 1) key = 'X';
+        else key = ax >= ay ? axisKey(entPx, foe, 'x') : axisKey(entPx, foe, 'y');
+        note = `PUMP d=${d | 0}`; r += 3;
+      } else if (foe && d2 > SEP_MIN && d < AP.chase) {
+        key = towardSafe(entPx, foe, foesPx); note = `REACH d=${d | 0}`; r += 1;
+        if (Math.random() < 0.15) { const k = qPick(sNow); if (k !== key) { key = k; note = `LEARN d=${d | 0} Q(${sNow},${k})=${qGet(sNow, k)}`; } }
+      } else if (foe && d2 <= SEP_MIN) {
+        // a pack is nearby: keep distance until a target separates
+        key = dirScore(entPx, foesPx).key; note = `WAIT.2 d=${d | 0} 2nd=${d2 | 0}`; r -= 1;
+      } else {
+        key = AP.wander[state.steps % AP.wander.length]; note = 'SCAN';
+      }
+      // stuck-in-dirt escape: no position change for a few steps -> rotate
+      const moved = state._lastPos ? Math.hypot(entPx.x - state._lastPos.x, entPx.y - state._lastPos.y) : 99;
+      state._lastPos = entPx;
+      if (moved < 3) state._stuck = (state._stuck || 0) + 1; else state._stuck = 0;
+      if (state._stuck > 3) { key = ['ArrowRight', 'ArrowDown', 'ArrowLeft', 'ArrowUp'][state._stuck % 4]; note = `UNSTICK ${state._stuck}`; }
       // learn: the reward just earned belongs to the action chosen LAST step.
       // This step's r is topped up by any score jump observed at the last OCR.
       const rFull = r + Number(state._pendingR || 0);
@@ -376,7 +610,8 @@ async function runVisionSearch(state, cfg, browser, page, { useSim, bootClip, pr
       state._lastR = rFull;
       lastS = sNow; lastA = ACTS[key];
       state._eps = Math.max(L_EPS_MIN, state._eps * 0.9995);
-    } else { note = 'NOPOS'; }
+    } else { note = attractTop >= 2 ? 'NO-PLAYER' : 'NOPOS'; }
+    state._prevLive = liveFrame;
     state.trace.push({ i: state.steps, k: key, n: note, d: entPx ? nearestFoe(entPx, foesPx).d | 0 : null, t: Date.now() });
     await pressKey(key, key === 'X' ? 420 : 240).catch(() => {});
     await page.waitForTimeout(60);
@@ -411,13 +646,33 @@ async function runVisionSearch(state, cfg, browser, page, { useSim, bootClip, pr
     if (state.steps % 5 === 0) {
       const see = await perceive(state, page, clip, 'play');
       state.lastOcr = see.text;
-      const rr = see.text.match(/ROUND\s*([0-9]+)/i);
-      if (rr) state.round = rr[1];
-      // score jumps are a dense progress signal: reward the action that caused them
-      const sc = scoreOf(see.text);
+      // EJS menu overlay (gear/settings) covers the canvas and reads back as
+      // "Fast-Forward / Speed Options" — close it with ESC so the game is visible
+      // and the player stays in control.
+      if (/Fast[\s-]?Forward|Slow[\s-]?Motion|Speed\s*Options|\.Menu\b|Keyboard Bindings/i.test(see.text)) {
+        await page.keyboard.press('Escape').catch(() => {});
+        await page.waitForTimeout(350);
+        if (slowOn) { await setFlow('normal'); slowOn = false; say(state, 'slow-motion disabled (overlay)'); }
+        say(state, 'EJS menu overlay detected — closed with ESC');
+      }
+      const rr = see.text.match(/ROUND\s*([0-9]{1,2})\b/i);
+      if (rr) { const v = parseInt(rr[1], 10); if (v >= 1 && v <= 99) state.round = v; }
+      // score jumps are a dense progress signal: reward the action that caused them.
+      // Read the arcade score strip directly (digits-only OCR of the top crop).
+      const boxS = clip ? { x: clip.x, y: clip.y, width: clip.width, height: clip.height } : { x: 0, y: 0, width: see.width || 960, height: see.height || 540 };
+      const sc = await (async () => {
+        try {
+          const W = boxS.width, H = boxS.height;
+          const out = execFileSync(venvPy, ['C:/Users/trist/gemini-voice-assistant/dd_score.py', see.png, String(0), String(Math.round(H * 0.03)), String(Math.round(W * 0.5)), String(Math.round(H * 0.125))], { encoding: 'utf8', timeout: 15000 });
+          const m = out.match(/SCORE=([0-9\s]+)/);
+          if (!m) return null;
+          const nums = (m[1].match(/\d{3,}/g) || []);
+          return nums.length ? parseInt(nums[0], 10) : null;
+        } catch (e) { return null; }
+      })();
       if (sc != null && state._lastScore != null) {
         const delta = sc - state._lastScore;
-        if (delta >= 50 && state._lastScore >= 0) { const bonus = Math.min(24, Math.round(delta / 10)); state._pendingR = (state._pendingR || 0) + bonus; say(state, `SCORE ${state._lastScore}->${sc} (+${delta}) reward +${bonus}`); }
+        if (delta >= 300 && state._lastScore >= 0) { const bonus = Math.min(30, Math.round(delta / 10)); state._pendingR = (state._pendingR || 0) + bonus; state.kills = (state.kills || 0) + 1; say(state, `SCORE ${state._lastScore}->${sc} (+${delta}) kill +${bonus}`); }
       }
       if (sc != null) state._lastScore = sc;
       // once per life, prove the HUD overlay is alive in the browser
@@ -435,17 +690,45 @@ async function runVisionSearch(state, cfg, browser, page, { useSim, bootClip, pr
       if (winMarkers.length && matchMarkers(see.text, winMarkers)) { if (lastS >= 0 && lastA >= 0) qSet(lastS, lastA, qGet(lastS, lastA) + L_LR * (60 - qGet(lastS, lastA))); state.win = true; say(state, '*** WIN: level-1 clear (ROUND 2 reached) ***'); break; }
       if (deadMarkers.length && matchMarkers(see.text, deadMarkers)) say(state, 'GAME OVER screen seen — re-booting from title');
       if (state.started && titleMarkers.length && matchMarkers(see.text, titleMarkers)) {
+        // a freshly-restored life can show one attract-ish frame right after
+        // loadState; don't treat it as another death.
+        if (state.steps > 3) {
         // life lost: propagate the terminal punishment into the learner
         deathPunish(); lastS = -1; lastA = -1; prevFoe = 0; lastD = null;
         state.lives = (state.lives || 0) + 1;
-        if (state.lives >= (g.lifeBudget || 20)) { say(state, `life budget reached (${state.lives}) with ${state.kills || 0} kills — fresh game needed`); break; }
+        // no-progress sentinel: many restores without a single kill means the
+        // restore point is bad — force a clean game relaunch instead of looping.
+        if ((state.kills || 0) <= (state._lastKillMark || 0)) state._noProg = (state._noProg || 0) + 1;
+        else state._noProg = 0;
+        state._lastKillMark = state.kills || 0;
+        if (state._noProg > 12) { say(state, `no progress after ${state._noProg} restores — forcing fresh game`); state.lives = (g.lifeBudget || 20); }
+        if (state.lives >= (g.lifeBudget || 20)) {
+          state.games = (state.games || 0) + 1;
+          const maxGames = g.maxGames != null ? g.maxGames : 10;
+          if (state.games >= maxGames) { say(state, `max games (${state.games}) with ${state.kills || 0} kills — stopping`); break; }
+          say(state, `life budget reached (${state.lives}) with ${state.kills || 0} kills — relaunching fresh game (#${state.games})`);
+          const ok = await relaunchGame();
+          if (!ok) { say(state, 'relaunch failed — stopping'); break; }
+          continue;
+        }
         if (g.researchStop) { say(state, `research: life ended at step ${state.steps}`); break; }
         // all lives spent → title back. Re-boot a fresh game and keep trying.
         state.attempts = (state.attempts || 1) + 1;
-        say(state, `died — attempt ${state.attempts - 1} over, re-booting to keep trying`);
+        say(state, `died — attempt ${state.attempts - 1} over, restoring fresh life`);
         state.started = false; started = false;
         state.steps = 0; // fresh life = fresh time budget
         state.round = null;
+        if (useStates) {
+          const ok = await loadSlot('boot');
+          if (ok > 0) {
+            state.started = true; started = true; slowOn = false;
+            if (wantSlow) { await setFlow('slow'); slowOn = true; }
+            say(state, `attempt ${state.attempts} restored from savestate (no re-boot)`);
+          } else {
+            useStates = false;
+            say(state, 'savestate restore failed — falling back to key re-boot');
+          }
+        }
         for (let b2 = 0; b2 < 8 && !state.started; b2++) {
           await pressKey(startKeys[b2 % startKeys.length], 400).catch(() => {});
           await pressKey('X', 350).catch(() => {});
@@ -454,6 +737,7 @@ async function runVisionSearch(state, cfg, browser, page, { useSim, bootClip, pr
           if (!titleMarkers.length || !matchMarkers(rc.text, titleMarkers)) { state.started = true; started = true; say(state, `attempt ${state.attempts} started`); break; }
         }
         if (!state.started) { say(state, 're-boot failed — pausing'); await page.waitForTimeout(2000); }
+        }
       }
     }
   }
@@ -480,7 +764,7 @@ async function runGame(state, cfg, browser, page) {
   // and reaches the core directly.
   let useSim = await bindEJS(page);
   const SIMBTN = { 'ArrowUp': 4, 'ArrowDown': 5, 'ArrowLeft': 6, 'ArrowRight': 7, 'X': 8, 'A': 8, 'Space': 8, 'Z': 0, 'B': 0, 'Enter': 3, 'NumpadEnter': 3, 'Return': 3, 'Shift': 2, '5': 3, '1': 3 };
-  const BUTTON_NAMES = { 4: 'ArrowUp', 5: 'ArrowDown', 6: 'ArrowLeft', 7: 'ArrowRight', 8: 'X', 0: 'Z', 3: 'Enter' };
+  const BUTTON_NAMES = { 4: 'ArrowUp', 5: 'ArrowDown', 6: 'ArrowLeft', 7: 'ArrowRight', 8: 'X', 0: 'Z', 3: 'Enter', 2: 'Shift' };
   const pressKey = (k, holdMs) => {
     const btn = SIMBTN[k];
     if (useSim && btn !== undefined) {
@@ -500,6 +784,10 @@ async function runGame(state, cfg, browser, page) {
   // failover: if the primary host won't resolve/load (site down, DNS outage), try
   // registry-level mirrors so the session survives instead of dying outright.
   const fallbackUrls = [...(reg.fallbackUrls || []), ...(g.fallbackUrls || [])].filter((u, i, a) => u && u !== g.url && a.indexOf(u) === i);
+  if ([g.url, ...fallbackUrls].some((u) => u && u.includes('127.0.0.1:8801'))) {
+    say(state, 'local EJS harness targeted; starting server if needed');
+    await ensureLocalEjs();
+  }
   let navigated = null;
   for (const u of [g.url, ...fallbackUrls]) {
     try {
@@ -541,13 +829,17 @@ async function runGame(state, cfg, browser, page) {
     } catch (e) {}
   } else {
     await page.waitForTimeout(3000);
+    // EmulatorJS embeds with startOnLoaded=false show a "Start Game" overlay;
+    // a real click starts the core and unlocks audio in headless mode.
+    if (await clickEJSStart(page)) say(state, 'CLICKED EJS start button');
+    else say(state, 'no EJS start button yet — will retry after core check');
   }
 
   // wait until the EJS emulator object + canvas actually exist across any frame
   // (mirror embeds fetch the ROM before the core is created; stepping too early
   // yields no sim, and the emulator may live in an iframe)
   let gotEJS = false;
-  for (let i = 0; i < 40; i++) {
+  for (let i = 0; i < 60; i++) {
     for (const frame of page.frames()) {
       gotEJS = await frame.evaluate(() => {
         try { return !!(window.EJS_emulator && document.querySelector('canvas.ejs_canvas')); } catch (e) { return false; }
@@ -555,6 +847,7 @@ async function runGame(state, cfg, browser, page) {
       if (gotEJS) break;
     }
     if (gotEJS) break;
+    if (i === 25 || i === 45) { if (await clickEJSStart(page)) say(state, 're-clicked EJS start (core slow)'); }
     await page.waitForTimeout(2000);
   }
   if (gotEJS) say(state, 'EJS + canvas present after load');
@@ -564,7 +857,6 @@ async function runGame(state, cfg, browser, page) {
     const c = page.locator('canvas.ejs_canvas, canvas#nes, canvas').first();
     if (await c.count()) canvas = c;
   }
-
   // Sim-input + GameManager bindings must be set AFTER the page/emulator loads
   // (EJS_emulator only exists post-boot). Recompute now that the page is up.
   {
@@ -575,6 +867,20 @@ async function runGame(state, cfg, browser, page) {
 
   await page.bringToFront().catch(() => {});
 
+  // Direct coin+start via simulate_input — the DOM button click is unreliable
+  // in headless and after page reloads. Send Coin (button 2) + Start (button 3)
+  // directly to the FBNeo core.
+  if (useSim) {
+    await simCoinStart(page, useSim);
+    say(state, 'sent coin+start via simulate_input');
+    // Send initial movement keys to keep the character alive while the vision
+    // loop boots up — the character dies in ~5s from inaction otherwise.
+    for (const k of ['ArrowRight', 'ArrowDown', 'ArrowLeft', 'ArrowUp']) {
+      await pressKey(k, 150).catch(() => {});
+    }
+    await page.waitForTimeout(1000);
+  }
+
   // Vision-search mode: use GameManager save/load + fast-forward to branch and
   // retry, learning which actions maximize survival/enemy-kills. Requires EJS.
   say(state, `DBG vision=${g.vision} useSim=${useSim}`);
@@ -582,7 +888,7 @@ async function runGame(state, cfg, browser, page) {
     const gmReady = await frameEval(page, () => { try { return !!(window.__GM && window.__GM.getState && window.__GM.loadState); } catch (e) { return false; } });
     if (gmReady) {
       say(state, 'VISION-SEARCH mode (save/load + FF)');
-      let bootClip = cachedFrameBox(page) || (canvas ? await box(page, canvas) : null);
+      let bootClip = cachedFrameBox(page) || await canvasBoxOf(page.mainFrame()) || (canvas ? await box(page, canvas) : null);
       state.attempts = 1;
       await runVisionSearch(state, cfg, browser, page, {
         useSim, bootClip, pressKey, pressBtn, canvas,
@@ -870,11 +1176,77 @@ async function box(page, locator) {
   try { return (await locator.boundingBox()) || null; } catch (e) { return null; }
 }
 
+// Local self-hosted EJS harness (ejs_local/serve_ejs.mjs on 127.0.0.1:8801).
+// Start it on demand so dig-dug runs can always fall back to a page we control.
+const EJS_PORT = 8801;
+function portOpen(port) {
+  return new Promise((res) => {
+    const s = net.connect({ port, host: '127.0.0.1' });
+    s.once('connect', () => { s.destroy(); res(true); });
+    s.once('error', () => res(false));
+  });
+}
+async function ensureLocalEjs() {
+  if (await portOpen(EJS_PORT)) return true;
+  const serverPath = 'C:/Users/trist/gemini-voice-assistant/ejs_local/serve_ejs.mjs';
+  if (!fs.existsSync(serverPath)) return false;
+  spawn(process.execPath, [serverPath, String(EJS_PORT)], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
+  for (let i = 0; i < 30; i++) { if (await portOpen(EJS_PORT)) return true; await new Promise((r) => setTimeout(r, 200)); }
+  return false;
+}
+
+// Click an EJS "Start Game" overlay button when one exists. Mirrors the Play
+// CTA click on the arcade hosts and unlocks the AudioContext in headless mode.
+async function clickEJSStart(page) {
+  const loc = page.locator('button:has-text("Start Game"), .start-button, .ejs_start_button, .gamestarted button:has-text("Start")').first();
+  try { if (await loc.count()) { await loc.click({ timeout: 6000 }); return true; } } catch (e) {}
+  return false;
+}
+
 // EJS can run in the top page (arcadepot) OR inside a child frame (retrogames
 // mirrors). Find the frame that owns a working simulator: EJS_emulator with a
 // gameManager (getState/loadState) AND cwrap('simulate_input'). Returns the
 // resident frame plus the canvas box in MAIN-page coordinates (frame-enabled
 // locator.boundingBox handles cross-frame conversion).
+
+// Direct coin+start via simulate_input — bypasses the DOM "Start Game" button
+// which is unreliable in headless. FBNeo arcade core: button 2 = Coin, button 3 = Start.
+const simCoinStart = async (page, useSim) => {
+  if (!useSim) return;
+  for (const b of [2, 2, 3]) {
+    await frameEval(page, (b) => { try { window.__SIM3(0, b, 1); } catch (e) {} }, b).catch(() => {});
+    await page.waitForTimeout(120);
+    await frameEval(page, (b) => { try { window.__SIM3(0, b, 0); } catch (e) {} }, b).catch(() => {});
+    await page.waitForTimeout(120);
+  }
+};
+
+// Locate the real game canvas inside `frame` and return its bounding rect in
+// PAGE coordinates (offsets an iframe element too). Prefers .ejs_canvas, then
+// #nes, then the smallest on-screen canvas (some embeds overlay a full-viewport
+// background canvas that boundingBox would otherwise report as the game).
+async function canvasBoxOf(frame) {
+  const r = await frame.evaluate(() => {
+    try {
+      const all = Array.from(document.querySelectorAll('canvas'));
+      const pick = all.find((c) => (c.className || '').includes('ejs_canvas'))
+        || all.find((c) => c.id === 'nes')
+        || all.find((c) => { const q = c.getBoundingClientRect(); return q.width > 50 && q.height > 50 && q.width < (window.innerWidth - 1) && q.height < (window.innerHeight - 1); });
+      if (!pick) return null;
+      const q = pick.getBoundingClientRect();
+      return { x: q.x, y: q.y, width: q.width, height: q.height };
+    } catch (e) { return null; }
+  }).catch(() => null);
+  if (!r) return null;
+  if (frame !== frame.page().mainFrame()) {
+    try {
+      const fe = await frame.frameElement().boundingBox();
+      if (fe) { r.x += fe.x; r.y += fe.y; }
+    } catch (e) {}
+  }
+  return r;
+}
+
 const ejsBindings = new WeakMap(); // page -> { frame, frameBox }
 async function detectEJS(page) {
   const frames = page.frames();
@@ -890,12 +1262,8 @@ async function detectEJS(page) {
         } catch (e) { return false; }
       });
       if (!ok) continue;
-      const c = frame.locator('canvas.ejs_canvas, canvas#nes, canvas').first();
-      if (await c.count()) {
-        const frameBox = await box(page, c);
-        if (frameBox) return { frame, frameBox };
-      }
-      return { frame, frameBox: null };
+      const frameBox = await canvasBoxOf(frame);
+      return { frame, frameBox };
     } catch (e) { /* frame detached — skip */ }
   }
   return null;
@@ -912,6 +1280,16 @@ async function bindEJS(page) {
         window.__SIM3 = E.Module.cwrap('simulate_input', 'null', ['number', 'number', 'number']);
         window.__GM = E.gameManager;
         window.__FF = (v) => { try { E.gameManager.toggleFastForward(v); } catch (e) {} };
+        window.__SLOW = (v) => { try { const gm = E.gameManager; if (v) { if (typeof gm.setSlowMotionRatio === 'function') gm.setSlowMotionRatio(0.5); gm.toggleSlowMotion(true); } else { try { gm.toggleSlowMotion(false); } catch (e) {} } } catch (e) {} };
+        window.__PAUSE = (v) => { try { E.gameManager.toggleMainLoop(!v); } catch (e) {} };
+        window.__ST = window.__ST || {};
+        window.__SAVESLOT = (k) => { try { const s = E.gameManager.getState(); if (s) { window.__ST[k] = s; return Array.from(s).length; } } catch (e) { return -1; } };
+        window.__LOADSLOT = (k) => { try { const s = window.__ST[k]; if (s) { E.gameManager.loadState(new Uint8Array(s)); return 1; } } catch (e) { return 0; } };
+        window.__EJSSTART = 0; window.__EJSLOAD = 0;
+        if (typeof E.on === 'function') {
+          E.on('start', () => { window.__EJSSTART = 1; });
+          E.on('loadState', () => { window.__EJSLOAD = 1; });
+        }
       });
       ejsBindings.set(page, ctx);
       return true;
@@ -1029,13 +1407,15 @@ async function main() {
     let browser = null;
     let page = null;
     try {
+      // pin software rendering: the GPU process was crashing under headful
+      // 1280x800 and taking the page with it.
       browser = await chromium.launch({
         headless: cfg.headless === true,
         executablePath: chromePath,
-        args: ['--start-fullscreen', '--disable-extensions'],
+        args: ['--start-maximized', '--disable-extensions', '--disable-gpu', '--disable-dev-shm-usage', '--no-sandbox'],
       });
       lastBrowser = browser;
-      page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+      page = await browser.newPage({ viewport: { width: 1024, height: 768 } });
       page.on('pageerror', (e) => say(state, `PAGE_ERR: ${e.message.slice(0, 100)}`));
       page.on('close', () => say(state, 'PAGE closed (will revive on next liveness check)'));
       page.on('crash', () => say(state, 'PAGE crashed (will revive on next liveness check)'));
