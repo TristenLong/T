@@ -3517,7 +3517,6 @@ def _autoplay_worker_node(query, max_steps, goal):
                 'strategyHint': hints.get('strategyHint'),
                 'startKeysHint': hints.get('startKeysHint'),
                 'winMarkersHint': hints.get('winMarkersHint'),
-                'vision': True,
             },
             'stateFile': _AGENT_STATE,
             'headless': False,
